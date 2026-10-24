@@ -32,13 +32,18 @@ There is also a command line:
 waking from hibernate stops at a typed disk password:
 
 - the hibernation image is on a LUKS-encrypted device, and
-- nothing can unlock that disk by itself: no key file, TPM, FIDO key, or
-  systemd unlock path (`rd.luks`) that might try enrolled tokens.
+- the disk is unlocked by the classic `encrypt` initramfs hook from
+  `cryptdevice=`, with no key file (`cryptkey=`, `/crypto_keyfile.bin`, or a
+  key in mkinitcpio `FILES`). systemd-based unlocking (`sd-encrypt`,
+  `rd.luks`) is refused because it can use TPM or FIDO tokens on its own, and
+- hibernate really powers off (`HibernateMode` does not keep it in memory).
 
 Normal sleep, hybrid sleep and suspend-then-hibernate still lock as before.
-If the plugin can't tell which kind of sleep is starting (for example because
-your user can't read the system journal), it locks. If a hibernate fails and
-the session comes straight back, it locks within 30 seconds. If you remove the
+It only trusts logind's announcement of the sleep that is starting right now,
+never an earlier one. If it can't tell which kind of sleep is starting (for
+example because your user can't read the system journal), it locks. If a
+hibernate fails and the session comes straight back, it locks the moment the
+machine returns. If you remove the
 plugin without turning the fix off, Omarchy's own lock-before-sleep takes over
 again automatically.
 
@@ -47,8 +52,13 @@ again automatically.
 1. takes a Snapper root snapshot, and stops if that fails;
 2. keeps a copy of `/boot/limine.conf` as `/boot/limine.conf.boot-wake.bak`
    (the boot partition is not covered by snapshots);
-3. changes only the `timeout:` line and checks that nothing else differs
-   before saving.
+3. takes the same boot-partition lock the Limine tools use, changes only the
+   `timeout:` line, checks that nothing else differs, and flushes the change
+   to disk before reporting success.
+
+It refuses to run when Limine config enrolment (`ENABLE_ENROLL_LIMINE_CONFIG`,
+used with Secure Boot) is on, because editing an enrolled config stops the
+machine booting.
 
 Turning it off puts back the exact original line and removes the backup.
 `omarchy refresh limine` resets the whole file to Omarchy's default.
@@ -84,7 +94,8 @@ omarchy plugin remove io.github.cylon58.boot-wake
 ## Tests
 
 ```sh
-tests/run.sh
+tests/run.sh       # safety checks and the boot menu editor
+tests/monitor.sh   # simulated sleeps through the sleep monitor
 ```
 
 ## License

@@ -5,6 +5,11 @@
 # plain hibernate behind disk encryption skips the lock, because waking up
 # already demands the disk password. Suspend, hybrid sleep, suspend-then-
 # hibernate and anything unrecognised still lock exactly as before.
+#
+# Unlike the stock monitor, this one stays running across sleeps. It drops
+# the inhibitor to let a sleep proceed, takes it back the moment the machine
+# returns, and if a skipped hibernate never actually powered down, it locks
+# right then through the same lock script.
 
 here=$(dirname "$(readlink -f "$0")")
 # shellcheck source=../lib/common.sh
@@ -13,75 +18,87 @@ source "$here/../lib/common.sh"
 sleep_lock="${OMARCHY_PATH:-/usr/share/omarchy}/bin/omarchy-system-sleep-lock"
 [[ -x $sleep_lock ]] || sleep_lock=omarchy-system-sleep-lock
 
-should_skip_lock() {
-  [[ -z $(bw_hibernate_unprotected_reason) ]] &&
-    [[ $(bw_pending_sleep_action "$1") == hibernate ]]
+now_ms() { echo $((10#${EPOCHREALTIME//[!0-9]/} / 1000)); }
+
+# The lock script's own budget, worked out the same way it does: logind's
+# delay window less a fifth (at least a second), capped at 12s. Time spent
+# here deciding comes out of it, so the total never overruns the window.
+lock_budget_ms() {
+  local window
+  window=$(timeout 1 busctl get-property org.freedesktop.login1 /org/freedesktop/login1 \
+    org.freedesktop.login1.Manager InhibitDelayMaxUSec 2>/dev/null)
+  window=${window##* }
+  [[ $window =~ ^[0-9]+$ ]] && (( window > 0 )) || window=5000000
+  window=$((window / 1000))
+  window=$((window - (window / 5 > 1000 ? window / 5 : 1000)))
+  (( window < 12000 )) && echo "$window" || echo 12000
 }
 
-consume_sleep_events() {
-  local line
-  while IFS= read -r line; do
-    if [[ $line == *"boolean true"* ]]; then
-      if should_skip_lock "${EPOCHREALTIME%%[.,]*}"; then
-        mkdir -p "$BW_RUNTIME_DIR"
-        bw_slept_seconds >"$BW_SKIP_MARKER"
+inhibitor_pid=""
+
+take_inhibitor() {
+  [[ -n $inhibitor_pid ]] && return
+  systemd-inhibit --what=sleep --mode=delay --who=Omarchy \
+    --why="Lock screen before suspend" sleep infinity &
+  inhibitor_pid=$!
+}
+
+# Ending the held command lets systemd-inhibit exit cleanly and release.
+release_inhibitor() {
+  [[ -n $inhibitor_pid ]] || return
+  pkill -P "$inhibitor_pid" -x sleep 2>/dev/null
+  kill "$inhibitor_pid" 2>/dev/null
+  wait "$inhibitor_pid" 2>/dev/null
+  inhibitor_pid=""
+}
+
+trap release_inhibitor EXIT
+
+# Checked once: the boot configuration it reads cannot change without a reboot
+# that also restarts this monitor.
+unprotected=$(bw_hibernate_unprotected_reason)
+budget_ms=$(lock_budget_ms)
+
+coproc SLEEP_EVENTS {
+  exec dbus-monitor --system \
+    "type='signal',sender='org.freedesktop.login1',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'"
+}
+
+take_inhibitor
+cursor=$(bw_journal_cursor)
+skipped=false
+slept_before=""
+
+while IFS= read -r line <&"${SLEEP_EVENTS[0]}"; do
+  case $line in
+    *"boolean true"*)
+      started=$(now_ms)
+      if [[ -z $unprotected ]] &&
+        slept_before=$(bw_slept_seconds) && [[ $slept_before =~ ^[0-9]+$ ]] &&
+        [[ $(bw_pending_sleep_action "$cursor") == hibernate ]]; then
+        skipped=true
       else
-        "$sleep_lock"
+        remaining=$((budget_ms - ($(now_ms) - started)))
+        (( remaining >= 500 )) || remaining=500
+        "$sleep_lock" "$remaining"
       fi
-      return 0
-    fi
-  done
-}
+      release_inhibitor
+      ;;
+    *"boolean false"*)
+      take_inhibitor
+      if $skipped; then
+        skipped=false
+        # A real hibernate accrues sleep time. None means it failed and the
+        # session never left; lock it now.
+        slept_after=$(bw_slept_seconds)
+        if [[ ! $slept_after =~ ^[0-9]+$ ]] || (( slept_after - slept_before < 10 )); then
+          "$sleep_lock"
+        fi
+      fi
+      cursor=$(bw_journal_cursor)
+      ;;
+  esac
+done
 
-monitor_sleep_events() {
-  local monitor_fd monitor_pid
-
-  coproc SLEEP_EVENTS {
-    exec dbus-monitor --system \
-      "type='signal',sender='org.freedesktop.login1',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'"
-  }
-  monitor_fd=${SLEEP_EVENTS[0]}
-  monitor_pid=$SLEEP_EVENTS_PID
-
-  consume_sleep_events <&"$monitor_fd"
-  kill "$monitor_pid" 2>/dev/null || true
-  wait "$monitor_pid" 2>/dev/null || true
-}
-
-# A skipped lock is only safe if the machine really powered down. If the
-# hibernate failed and the session came straight back, no sleep time accrues,
-# so lock now as the stock monitor would have.
-verify_skipped_lock() {
-  local before now i
-  [[ -f $BW_SKIP_MARKER ]] || return 0
-  read -r before <"$BW_SKIP_MARKER"
-  [[ $before =~ ^[0-9]+$ ]] || before=0
-
-  for (( i = 0; i < 30; i++ )); do
-    now=$(bw_slept_seconds)
-    if (( now - before >= 10 )); then
-      rm -f "$BW_SKIP_MARKER"
-      return 0
-    fi
-    sleep 1
-  done
-
-  rm -f "$BW_SKIP_MARKER"
-  omarchy-shell lock lock >/dev/null 2>&1
-}
-
-case ${1:-} in
-  --inhibited)
-    monitor_sleep_events
-    exit 0
-    ;;
-esac
-
-verify_skipped_lock &
-
-exec systemd-inhibit \
-  --what=sleep \
-  --mode=delay \
-  --who=Omarchy \
-  --why="Lock screen before suspend" \
-  "$here/sleep-monitor" --inhibited
+# dbus-monitor went away; exit so systemd restarts the service cleanly.
+exit 1

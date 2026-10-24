@@ -33,8 +33,27 @@ snapshot() {
     { echo "Snapshot failed. Nothing changed." >&2; exit 1; }
 }
 
+# Secure Boot setups enrol a checksum of limine.conf; changing the file
+# without re-enrolling makes Limine refuse to boot. Not supported.
+if grep -qsE "^[[:space:]]*ENABLE_ENROLL_LIMINE_CONFIG=[\"']?yes" \
+  "$fake_root/etc/limine-entry-tool.conf" "$fake_root/etc/default/limine" \
+  "$fake_root"/etc/limine-entry-tool.d/*.conf; then
+  echo "Limine config enrolment is on (Secure Boot); changing limine.conf would stop it booting. Nothing changed." >&2
+  exit 1
+fi
+
+# limine-entry-tool and limine-snapper-sync rewrite limine.conf under this
+# lock; holding it keeps their edits and ours from overwriting each other.
+lock_boot_partition() {
+  local lock=$fake_root/run/lock/boot-partition.lock
+  mkdir -p "${lock%/*}"
+  exec 200>"$lock"
+  flock --timeout=60 200 || { echo "The boot partition is busy. Nothing changed." >&2; exit 1; }
+}
+
 # Writes the new config beside the old one, checks that only the timeout line
 # differs, then swaps it in. Anything unexpected leaves the old file in place.
+# The ESP is FAT with no journal, so flush the rename before reporting success.
 replace_conf() {
   local tmp=$conf.boot-wake.tmp changed
   cat >"$tmp"
@@ -46,6 +65,7 @@ replace_conf() {
   fi
   sync "$tmp"
   mv "$tmp" "$conf"
+  sync -f "$conf"
 }
 
 current_timeout_line() {
@@ -58,9 +78,13 @@ set_menu() {
     { echo "Seconds must be 1-30" >&2; exit 1; }
 
   snapshot "shortening the boot menu to ${seconds}s"
+  lock_boot_partition
   # The ESP is not in any Btrfs snapshot, so keep a copy of the config there.
   # Only the first copy is kept: the config as it was before Boot & Wake.
-  [[ -f $backup ]] || cp -p "$conf" "$backup"
+  if [[ ! -f $backup ]]; then
+    cp -p "$conf" "$backup"
+    sync -f "$backup"
+  fi
   line=$(current_timeout_line)
   # Keep the original from the first change only; a repeat run must not save
   # our own line as the "original".
@@ -84,10 +108,23 @@ set_menu() {
 
 restore_menu() {
   local original
-  [[ -f $saved ]] || { echo "Nothing to restore" >&2; exit 0; }
-  original=$(<"$saved")
-  snapshot "restoring the boot menu wait"
+  if [[ -f $saved ]]; then
+    original=$(<"$saved")
+  elif [[ -f $backup ]]; then
+    # The saved line can be lost, e.g. by rolling root back to a snapshot
+    # from before the change. The ESP backup still has the original.
+    original=$(grep -m1 -E '^[[:space:]]*#?[[:space:]]*timeout:' "$backup" || echo "<none>")
+  else
+    original="<none>"
+  fi
+  if ! grep -qF "$marker" "$conf"; then
+    echo "Boot menu already at its original setting" >&2
+    rm -f "$saved" "$backup"
+    exit 0
+  fi
 
+  snapshot "restoring the boot menu wait"
+  lock_boot_partition
   if [[ $original == "<none>" ]]; then
     grep -v -F "$marker" "$conf" | replace_conf
   else

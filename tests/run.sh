@@ -24,25 +24,44 @@ source "$repo/lib/common.sh"
 
 # --- Is skipping the lock after hibernate safe? -------------------------------
 BW_SKIP_DEVICE_CHECK=1
-BW_CRYPTTAB_FILES="$work/crypttab"
-: >"$work/crypttab"
+BW_MKINITCPIO_DIR="$work/etc"
+BW_KEYFILE="$work/crypto_keyfile.bin"
+mkdir -p "$work/etc/mkinitcpio.conf.d"
+initramfs() { printf '%s\n' "$@" >"$work/etc/mkinitcpio.conf"; }
 reason() { printf '%s' "$1" >"$work/cmdline"; BW_CMDLINE_FILE="$work/cmdline" bw_hibernate_unprotected_reason; }
+omarchy_cmdline='cryptdevice=PARTUUID=x:root root=/dev/mapper/root resume=/dev/mapper/root resume_offset=1 quiet'
 
-check "omarchy default is protected" "" \
-  "$(reason 'cryptdevice=PARTUUID=x:root root=/dev/mapper/root resume=/dev/mapper/root resume_offset=1 quiet')"
+# Omarchy's real layout: a base file, then a drop-in that replaces HOOKS.
+initramfs 'MODULES=()' 'FILES=()' 'HOOKS=(base systemd autodetect block filesystems)'
+echo 'HOOKS=(base udev plymouth keyboard autodetect kms block encrypt filesystems fsck)' \
+  >"$work/etc/mkinitcpio.conf.d/omarchy_hooks.conf"
+check "omarchy default is protected" "" "$(reason "$omarchy_cmdline")"
 check "no hibernation" "hibernation is not set up" \
   "$(reason 'cryptdevice=PARTUUID=x:root root=/dev/mapper/root quiet')"
-check "key file unlock" "the disk may unlock without a typed password" \
+check "key file on cmdline" "the disk may unlock without a typed password" \
   "$(reason 'cryptdevice=PARTUUID=x:root cryptkey=rootfs:/key resume=/dev/mapper/root')"
 check "systemd unlock may use TPM" "the disk may unlock without a typed password" \
   "$(reason 'rd.luks.name=abc=root root=/dev/mapper/root resume=/dev/mapper/root')"
-echo 'root UUID=abc none tpm2-device=auto' >"$work/crypttab"
-check "TPM in crypttab" "the disk may unlock without a typed password" \
-  "$(reason 'cryptdevice=PARTUUID=x:root resume=/dev/mapper/root')"
-: >"$work/crypttab"
+check "luks. without rd. prefix" "the disk may unlock without a typed password" \
+  "$(reason 'luks.uuid=abc cryptdevice=PARTUUID=x:root resume=/dev/mapper/root')"
+
+echo 'FILES+=(/crypto_keyfile.bin)' >"$work/etc/mkinitcpio.conf.d/zz_key.conf"
+check "keyfile baked into initramfs" "the disk may unlock without a typed password" "$(reason "$omarchy_cmdline")"
+rm "$work/etc/mkinitcpio.conf.d/zz_key.conf"
+touch "$BW_KEYFILE"
+check "default keyfile present" "the disk may unlock without a typed password" "$(reason "$omarchy_cmdline")"
+rm "$BW_KEYFILE"
+
+echo 'HOOKS=(base systemd autodetect block sd-encrypt filesystems)' >"$work/etc/mkinitcpio.conf.d/zz_sd.conf"
+check "sd-encrypt refused" "the disk may unlock without a typed password" "$(reason "$omarchy_cmdline")"
+rm "$work/etc/mkinitcpio.conf.d/zz_sd.conf"
+rm "$work/etc/mkinitcpio.conf.d/omarchy_hooks.conf"
+check "hooks unreadable or missing encrypt" "the disk may unlock without a typed password" "$(reason "$omarchy_cmdline")"
+echo 'HOOKS=(base udev autodetect block encrypt filesystems)' >"$work/etc/mkinitcpio.conf.d/omarchy_hooks.conf"
+
 unset BW_SKIP_DEVICE_CHECK
 check "unencrypted resume device" "the hibernation image is not on an encrypted disk" \
-  "$(reason 'resume=/dev/null')"
+  "$(reason 'cryptdevice=PARTUUID=x:root resume=/dev/null')"
 
 # --- Which sleep is coming? ---------------------------------------------------
 action() { printf '%s\n' "$@" | bw_sleep_action_from_journal; }
@@ -91,6 +110,19 @@ check "config unchanged after refusal" "$omarchy_conf" "$(cat "$conf")"
 printf '#!/bin/sh\nexit 1\n' >"$work/bin/snapper"
 check "no snapshot, no change" "1" "$(helper boot-menu-set 1 2>/dev/null; echo $?)"
 check "config unchanged without snapshot" "$omarchy_conf" "$(cat "$conf")"
+printf '#!/bin/sh\necho "snapper $*" >>"%s/snapper.log"\n' "$work" >"$work/bin/snapper"
+
+# Root rolled back past the change: the saved line is gone, the ESP backup is not.
+helper boot-menu-set 1 2>/dev/null
+rm -rf "$work/root/var/lib/boot-wake"
+helper boot-menu-restore 2>/dev/null
+check "restore falls back to ESP backup" "$omarchy_conf" "$(cat "$conf")"
+
+mkdir -p "$work/root/etc"
+echo 'ENABLE_ENROLL_LIMINE_CONFIG=yes' >"$work/root/etc/limine-entry-tool.conf"
+check "enrolled config refused" "1" "$(helper boot-menu-set 1 2>/dev/null; echo $?)"
+check "enrolled config untouched" "$omarchy_conf" "$(cat "$conf")"
+rm "$work/root/etc/limine-entry-tool.conf"
 
 echo "$pass passed, $failed failed"
 (( failed == 0 ))
