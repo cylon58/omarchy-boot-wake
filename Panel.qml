@@ -109,7 +109,7 @@ Item {
 
       Repeater {
         model: root.fixes
-        delegate: Toggle {
+        delegate: StatusToggle {
           required property var modelData
           Layout.fillWidth: true
           label: modelData.label
