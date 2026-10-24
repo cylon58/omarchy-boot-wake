@@ -1,0 +1,106 @@
+#!/bin/bash
+
+# The privileged half of Boot & Wake, run through pkexec. It only ever touches
+# the timeout line of /boot/limine.conf and keeps the original line so it can
+# be put back exactly.
+#
+#   boot-wake-root boot-menu-set <seconds>
+#   boot-wake-root boot-menu-restore
+
+set -euo pipefail
+
+# Tests run unprivileged against a fake tree. pkexec clears the environment,
+# so this cannot redirect a real privileged run.
+fake_root=${BW_TEST_ROOT:-}
+conf=$fake_root/boot/limine.conf
+state_dir=$fake_root/var/lib/boot-wake
+saved=$state_dir/limine-timeout.orig
+# The line we write; anything else on the timeout line is the user's own.
+marker="# set by Boot & Wake"
+
+backup=$conf.boot-wake.bak
+
+[[ -n $fake_root ]] || (( EUID == 0 )) || { echo "boot-wake-root must run as root" >&2; exit 1; }
+[[ -f $conf ]] || { echo "No Limine config at $conf" >&2; exit 1; }
+
+# A root snapshot first, so the machine can be rolled back from the boot
+# menu's Snapshots entry. No snapshot, no change.
+snapshot() {
+  command -v snapper >/dev/null && snapper -c root get-config >/dev/null 2>&1 ||
+    { echo "No Snapper root config, so no restore point can be made. Nothing changed." >&2; exit 1; }
+  snapper -c root create --cleanup-algorithm number \
+    --description "Boot & Wake: before $1" ||
+    { echo "Snapshot failed. Nothing changed." >&2; exit 1; }
+}
+
+# Writes the new config beside the old one, checks that only the timeout line
+# differs, then swaps it in. Anything unexpected leaves the old file in place.
+replace_conf() {
+  local tmp=$conf.boot-wake.tmp changed
+  cat >"$tmp"
+  changed=$(diff "$conf" "$tmp" | grep -E '^[<>]' | grep -vcE '^[<>][[:space:]]*#?[[:space:]]*timeout:' || true)
+  if [[ $changed != 0 || ! -s $tmp ]]; then
+    rm -f "$tmp"
+    echo "Unexpected change to $conf; left it untouched." >&2
+    exit 1
+  fi
+  sync "$tmp"
+  mv "$tmp" "$conf"
+}
+
+current_timeout_line() {
+  grep -m1 -E '^[[:space:]]*#?[[:space:]]*timeout:' "$conf" || true
+}
+
+set_menu() {
+  local seconds=$1 line
+  [[ $seconds =~ ^[0-9]+$ ]] && (( seconds >= 1 && seconds <= 30 )) ||
+    { echo "Seconds must be 1-30" >&2; exit 1; }
+
+  snapshot "shortening the boot menu to ${seconds}s"
+  # The ESP is not in any Btrfs snapshot, so keep a copy of the config there.
+  # Only the first copy is kept: the config as it was before Boot & Wake.
+  [[ -f $backup ]] || cp -p "$conf" "$backup"
+  line=$(current_timeout_line)
+  # Keep the original from the first change only; a repeat run must not save
+  # our own line as the "original".
+  if [[ ! -f $saved && $line != *"$marker"* ]]; then
+    mkdir -p "$state_dir"
+    printf '%s\n' "${line:-<none>}" >"$saved"
+  fi
+
+  if [[ -n $line ]]; then
+    awk -v new="timeout: $seconds $marker" '
+      !done && /^[[:space:]]*#?[[:space:]]*timeout:/ { print new; done = 1; next }
+      { print }' "$conf" | replace_conf
+  else
+    # No timeout line at all: add one after the leading comment block.
+    awk -v new="timeout: $seconds $marker" '
+      !done && !/^#/ { print new; done = 1 }
+      { print }
+      END { if (!done) print new }' "$conf" | replace_conf
+  fi
+}
+
+restore_menu() {
+  local original
+  [[ -f $saved ]] || { echo "Nothing to restore" >&2; exit 0; }
+  original=$(<"$saved")
+  snapshot "restoring the boot menu wait"
+
+  if [[ $original == "<none>" ]]; then
+    grep -v -F "$marker" "$conf" | replace_conf
+  else
+    awk -v orig="$original" -v mark="$marker" '
+      index($0, mark) { print orig; next }
+      { print }' "$conf" | replace_conf
+  fi
+  rm -f "$saved" "$backup"
+  rmdir "$state_dir" 2>/dev/null || true
+}
+
+case ${1:-} in
+  boot-menu-set) set_menu "${2:-}" ;;
+  boot-menu-restore) restore_menu ;;
+  *) echo "usage: boot-wake-root boot-menu-set <seconds> | boot-menu-restore" >&2; exit 2 ;;
+esac

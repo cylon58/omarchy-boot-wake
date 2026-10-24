@@ -1,0 +1,103 @@
+#!/bin/bash
+
+# Boot & Wake: opt-in fixes for how an Omarchy machine starts and wakes.
+#
+#   boot-wake status                 JSON state of every fix
+#   boot-wake enable <fix>           turn a fix on
+#   boot-wake disable <fix>          turn a fix off and restore the original
+#
+# Fixes:
+#   hibernate-unlock   No second password after waking from hibernate
+#   boot-menu          Boot menu waits 1 second instead of 5
+#
+# Every change is undone by `disable`. Nothing is changed by installing or
+# enabling the plugin itself.
+
+set -uo pipefail
+
+here=$(dirname "$(readlink -f "$0")")
+# shellcheck source=../lib/common.sh
+source "$here/../lib/common.sh"
+
+menu_seconds=1
+
+fail() {
+  jq -cn --arg error "$1" '{error: $error}' >&2
+  exit 1
+}
+
+hibernate_unlock_on() {
+  [[ -f $BW_DROPIN ]] && grep -q "$BW_ID" "$BW_DROPIN"
+}
+
+boot_menu_on() {
+  [[ -f $BW_STATE_DIR/boot-menu ]]
+}
+
+status() {
+  local reason on_unlock=false on_menu=false
+  reason=$(bw_hibernate_unprotected_reason)
+  hibernate_unlock_on && on_unlock=true
+  boot_menu_on && on_menu=true
+  jq -cn \
+    --argjson unlock "$on_unlock" --arg unlockBlocked "$reason" \
+    --argjson menu "$on_menu" --argjson menuSeconds "$menu_seconds" \
+    '{
+      "hibernate-unlock": {enabled: $unlock, blocked: $unlockBlocked},
+      "boot-menu": {enabled: $menu, blocked: "", seconds: $menuSeconds}
+    }'
+}
+
+restart_sleep_lock() {
+  systemctl --user daemon-reload &&
+    systemctl --user restart omarchy-sleep-lock.service
+}
+
+enable_hibernate_unlock() {
+  local reason
+  reason=$(bw_hibernate_unprotected_reason)
+  [[ -z $reason ]] || fail "Not turned on: $reason."
+
+  # Falls back to the stock monitor if this plugin is ever removed without
+  # being turned off first, so the screen never stops locking before suspend.
+  mkdir -p "$BW_DROPIN_DIR"
+  cat >"$BW_DROPIN" <<EOF
+# Managed by the Boot & Wake Omarchy plugin ($BW_ID).
+# Turn off with: boot-wake disable hibernate-unlock
+[Service]
+ExecStart=
+ExecStart=/bin/sh -c 'm="\$1"; [ -x "\$m" ] && exec "\$m"; exec /usr/bin/omarchy-system-sleep-monitor' sh $here/sleep-monitor
+EOF
+  restart_sleep_lock || fail "Saved, but the sleep lock service did not restart."
+}
+
+disable_hibernate_unlock() {
+  rm -f "$BW_DROPIN"
+  rmdir "$BW_DROPIN_DIR" 2>/dev/null
+  restart_sleep_lock || fail "Removed, but the sleep lock service did not restart."
+}
+
+enable_boot_menu() {
+  pkexec "$here/boot-wake-root" boot-menu-set "$menu_seconds" ||
+    fail "The boot menu was not changed."
+  mkdir -p "$BW_STATE_DIR"
+  echo "$menu_seconds" >"$BW_STATE_DIR/boot-menu"
+}
+
+disable_boot_menu() {
+  pkexec "$here/boot-wake-root" boot-menu-restore ||
+    fail "The boot menu was not restored."
+  rm -f "$BW_STATE_DIR/boot-menu"
+}
+
+case "${1:-} ${2:-}" in
+  "status "*) status ;;
+  "enable hibernate-unlock") enable_hibernate_unlock && status ;;
+  "disable hibernate-unlock") disable_hibernate_unlock && status ;;
+  "enable boot-menu") enable_boot_menu && status ;;
+  "disable boot-menu") disable_boot_menu && status ;;
+  *)
+    sed -n '3,14s/^# \{0,1\}//p' "$0" >&2
+    exit 2
+    ;;
+esac

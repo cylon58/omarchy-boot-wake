@@ -1,0 +1,87 @@
+#!/bin/bash
+
+# Stands in for omarchy-system-sleep-monitor while "No second password after
+# hibernate" is on. Same delay inhibitor, same lock script. The one change: a
+# plain hibernate behind disk encryption skips the lock, because waking up
+# already demands the disk password. Suspend, hybrid sleep, suspend-then-
+# hibernate and anything unrecognised still lock exactly as before.
+
+here=$(dirname "$(readlink -f "$0")")
+# shellcheck source=../lib/common.sh
+source "$here/../lib/common.sh"
+
+sleep_lock="${OMARCHY_PATH:-/usr/share/omarchy}/bin/omarchy-system-sleep-lock"
+[[ -x $sleep_lock ]] || sleep_lock=omarchy-system-sleep-lock
+
+should_skip_lock() {
+  [[ -z $(bw_hibernate_unprotected_reason) ]] &&
+    [[ $(bw_pending_sleep_action "$1") == hibernate ]]
+}
+
+consume_sleep_events() {
+  local line
+  while IFS= read -r line; do
+    if [[ $line == *"boolean true"* ]]; then
+      if should_skip_lock "${EPOCHREALTIME%%[.,]*}"; then
+        mkdir -p "$BW_RUNTIME_DIR"
+        bw_slept_seconds >"$BW_SKIP_MARKER"
+      else
+        "$sleep_lock"
+      fi
+      return 0
+    fi
+  done
+}
+
+monitor_sleep_events() {
+  local monitor_fd monitor_pid
+
+  coproc SLEEP_EVENTS {
+    exec dbus-monitor --system \
+      "type='signal',sender='org.freedesktop.login1',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'"
+  }
+  monitor_fd=${SLEEP_EVENTS[0]}
+  monitor_pid=$SLEEP_EVENTS_PID
+
+  consume_sleep_events <&"$monitor_fd"
+  kill "$monitor_pid" 2>/dev/null || true
+  wait "$monitor_pid" 2>/dev/null || true
+}
+
+# A skipped lock is only safe if the machine really powered down. If the
+# hibernate failed and the session came straight back, no sleep time accrues,
+# so lock now as the stock monitor would have.
+verify_skipped_lock() {
+  local before now i
+  [[ -f $BW_SKIP_MARKER ]] || return 0
+  read -r before <"$BW_SKIP_MARKER"
+  [[ $before =~ ^[0-9]+$ ]] || before=0
+
+  for (( i = 0; i < 30; i++ )); do
+    now=$(bw_slept_seconds)
+    if (( now - before >= 10 )); then
+      rm -f "$BW_SKIP_MARKER"
+      return 0
+    fi
+    sleep 1
+  done
+
+  rm -f "$BW_SKIP_MARKER"
+  omarchy-shell lock lock >/dev/null 2>&1
+}
+
+case ${1:-} in
+  --inhibited)
+    monitor_sleep_events
+    exit 0
+    ;;
+esac
+
+verify_skipped_lock &
+
+exec systemd-inhibit \
+  --what=sleep \
+  --mode=delay \
+  --who=Omarchy \
+  --why="Lock screen before suspend" \
+  "$here/sleep-monitor" --inhibited
