@@ -85,6 +85,7 @@ enable_boot_menu() {
 }
 
 disable_boot_menu() {
+  boot_menu_on || return 0
   pkexec "$here/boot-wake-root" boot-menu-restore ||
     fail "The boot menu was not restored."
   rm -f "$BW_STATE_DIR/boot-menu"

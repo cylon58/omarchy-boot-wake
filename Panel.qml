@@ -91,7 +91,10 @@ Item {
 
     ColumnLayout {
       id: column
-      anchors.fill: parent
+      // Hyprland may tile the window to any size; keep the rows at the top.
+      anchors.top: parent.top
+      anchors.left: parent.left
+      anchors.right: parent.right
       anchors.margins: Style.space(24)
       spacing: Style.space(12)
 
@@ -99,8 +102,9 @@ Item {
         text: "Boot & Wake"
         color: Color.foreground
         font.family: Style.font.family
-        font.pixelSize: Style.font.title
+        font.pixelSize: Style.font.title * 1.5
         font.bold: true
+        bottomPadding: Style.space(8)
       }
 
       Repeater {
