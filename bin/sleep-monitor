@@ -77,8 +77,11 @@ while true; do
   # Wake every few seconds to make sure the inhibitor is still held. Without
   # it the next suspend would not wait for the lock, so let systemd restart
   # the whole service instead of carrying on unprotected.
-  if ! IFS= read -r -t 5 line <&"${SLEEP_EVENTS[0]}"; then
-    (( $? > 128 )) || break
+  IFS= read -r -t 5 line <&"${SLEEP_EVENTS[0]}"
+  status=$?
+  if (( status != 0 )); then
+    # Above 128 is the read timing out; anything else means dbus-monitor ended.
+    (( status > 128 )) || break
     [[ -z $inhibitor_pid ]] || kill -0 "$inhibitor_pid" 2>/dev/null || exit 1
     continue
   fi

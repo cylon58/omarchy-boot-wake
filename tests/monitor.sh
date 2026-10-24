@@ -63,7 +63,7 @@ run() {
   WORK=$work PATH="$fake:$PATH" OMARCHY_PATH="$work/omarchy" \
     BW_CMDLINE_FILE="$work/cmdline" BW_MKINITCPIO_DIR="$work/etc" BW_KEYFILE="$work/none" \
     BW_SKIP_DEVICE_CHECK=1 BW_TEST_SLEPT_FILE="$work/slept" BW_POWER_DISK_FILE="$work/power_disk" \
-    timeout 12 "$repo/bin/sleep-monitor" >/dev/null 2>&1
+    timeout 20 "$repo/bin/sleep-monitor" >/dev/null 2>&1
   sleep 0.3
   paste -sd' ' "$work/events"
 }
@@ -147,12 +147,20 @@ S
   echo 'HOOKS=(base udev autodetect block encrypt filesystems)' >"$work/etc/mkinitcpio.conf"
 )"
 
+# Quiet for longer than the watchdog interval, then a suspend: the monitor
+# must still be running and lock. (A real bug once made it exit after 5s.)
+check "survives idle time, then locks" "take lock budget release take release" "$(run <<'S'
+sleep 7; announce suspend; echo "   boolean true"
+sleep 0.3; echo "   boolean false"
+S
+)"
+
 # The inhibitor dies mid-session: the monitor must exit so systemd restarts it.
 check "lost inhibitor ends the monitor" "exited" "$(
   : >"$work/events"; : >"$work/journal"
   echo 'sleep 9' >"$work/scenario"
   ( WORK=$work PATH="$fake:$PATH" OMARCHY_PATH="$work/omarchy" timeout 12 "$repo/bin/sleep-monitor" >/dev/null 2>&1; echo $? >"$work/rc" ) &
-  sleep 1; pkill -f "^$fake/systemd-inhibit" ; wait
+  sleep 1; pkill -f "$fake/systemd-inhibit"; wait
   [[ $(<"$work/rc") == 1 ]] && echo exited || echo "rc $(<"$work/rc")"
 )"
 
