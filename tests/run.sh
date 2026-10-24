@@ -64,7 +64,7 @@ check "unencrypted resume device" "the hibernation image is not on an encrypted 
   "$(reason 'cryptdevice=PARTUUID=x:root resume=/dev/null')"
 
 # --- Which sleep is coming? ---------------------------------------------------
-action() { printf '%s\n' "$@" | bw_sleep_action_from_journal; }
+action() { printf '%s\n' "$@" | bw_sleep_actions_from_journal | tail -n1; }
 id=$BW_LOGIND_SLEEP_ID
 
 check "menu hibernate" "hibernate" \
@@ -119,10 +119,29 @@ helper boot-menu-restore 2>/dev/null
 check "restore falls back to ESP backup" "$omarchy_conf" "$(cat "$conf")"
 
 mkdir -p "$work/root/etc"
-echo 'ENABLE_ENROLL_LIMINE_CONFIG=yes' >"$work/root/etc/limine-entry-tool.conf"
+echo 'ENABLE_ENROLL_LIMINE_CONFIG = "yes"' >"$work/root/etc/limine-entry-tool.conf"
 check "enrolled config refused" "1" "$(helper boot-menu-set 1 2>/dev/null; echo $?)"
 check "enrolled config untouched" "$omarchy_conf" "$(cat "$conf")"
 rm "$work/root/etc/limine-entry-tool.conf"
+
+mkdir -p "$work/root/sys/firmware/efi/efivars"
+printf '\x06\x00\x00\x00\x01' >"$work/root/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+check "Secure Boot refused" "1" "$(helper boot-menu-set 1 2>/dev/null; echo $?)"
+check "Secure Boot config untouched" "$omarchy_conf" "$(cat "$conf")"
+printf '\x06\x00\x00\x00\x00' >"$work/root/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+check "Secure Boot off is allowed" "0" "$(helper boot-menu-set 1 2>/dev/null; echo $?)"
+helper boot-menu-restore 2>/dev/null
+
+# The Limine tools say the ESP is /efi: edit that file, not /boot.
+echo 'ESP_PATH="/efi"' >"$work/root/etc/default-limine"
+mkdir -p "$work/root/etc/default" "$work/root/efi"
+mv "$work/root/etc/default-limine" "$work/root/etc/default/limine"
+printf '%s\n' "$omarchy_conf" >"$work/root/efi/limine.conf"
+helper boot-menu-set 1 2>/dev/null
+check "ESP_PATH followed" "timeout: 1 # set by Boot & Wake" "$(sed -n 2p "$work/root/efi/limine.conf")"
+check "other limine.conf untouched" "$omarchy_conf" "$(cat "$conf")"
+helper boot-menu-restore 2>/dev/null
+check "ESP_PATH restore" "$omarchy_conf" "$(cat "$work/root/efi/limine.conf")"
 
 echo "$pass passed, $failed failed"
 (( failed == 0 ))

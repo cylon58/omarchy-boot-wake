@@ -54,11 +54,6 @@ release_inhibitor() {
 
 trap release_inhibitor EXIT
 
-# Checked once: the boot configuration it reads cannot change without a reboot
-# that also restarts this monitor.
-unprotected=$(bw_hibernate_unprotected_reason)
-budget_ms=$(lock_budget_ms)
-
 coproc SLEEP_EVENTS {
   exec dbus-monitor --system \
     "type='signal',sender='org.freedesktop.login1',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'"
@@ -69,16 +64,32 @@ cursor=$(bw_journal_cursor)
 skipped=false
 slept_before=""
 
-while IFS= read -r line <&"${SLEEP_EVENTS[0]}"; do
+# Decides whether the sleep announced at $1 (epoch microseconds) may skip the
+# lock. The safety check runs every time: a resume boots whatever initramfs
+# and sleep settings are on disk now, not what was there at login.
+may_skip_lock() {
+  [[ $(bw_pending_sleep_action "$cursor" "$1") == hibernate ]] &&
+    [[ -z $(bw_hibernate_unprotected_reason) ]] &&
+    slept_before=$(bw_slept_seconds) && [[ $slept_before =~ ^[0-9]+$ ]]
+}
+
+while true; do
+  # Wake every few seconds to make sure the inhibitor is still held. Without
+  # it the next suspend would not wait for the lock, so let systemd restart
+  # the whole service instead of carrying on unprotected.
+  if ! IFS= read -r -t 5 line <&"${SLEEP_EVENTS[0]}"; then
+    (( $? > 128 )) || break
+    [[ -z $inhibitor_pid ]] || kill -0 "$inhibitor_pid" 2>/dev/null || exit 1
+    continue
+  fi
+
   case $line in
     *"boolean true"*)
       started=$(now_ms)
-      if [[ -z $unprotected ]] &&
-        slept_before=$(bw_slept_seconds) && [[ $slept_before =~ ^[0-9]+$ ]] &&
-        [[ $(bw_pending_sleep_action "$cursor") == hibernate ]]; then
+      if may_skip_lock "${EPOCHREALTIME//[!0-9]/}"; then
         skipped=true
       else
-        remaining=$((budget_ms - ($(now_ms) - started)))
+        remaining=$(( $(lock_budget_ms) - ($(now_ms) - started) ))
         (( remaining >= 500 )) || remaining=500
         "$sleep_lock" "$remaining"
       fi
@@ -88,10 +99,12 @@ while IFS= read -r line <&"${SLEEP_EVENTS[0]}"; do
       take_inhibitor
       if $skipped; then
         skipped=false
-        # A real hibernate accrues sleep time. None means it failed and the
-        # session never left; lock it now.
+        # Lock now unless logind confirms a hibernate finished and the machine
+        # really spent time powered down. Either missing means the session
+        # never left, or did something other than hibernate.
         slept_after=$(bw_slept_seconds)
-        if [[ ! $slept_after =~ ^[0-9]+$ ]] || (( slept_after - slept_before < 10 )); then
+        if ! bw_hibernate_finished_since "$cursor" ||
+          [[ ! $slept_after =~ ^[0-9]+$ ]] || (( slept_after - slept_before < 10 )); then
           "$sleep_lock"
         fi
       fi

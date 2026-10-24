@@ -35,12 +35,22 @@ waking from hibernate stops at a typed disk password:
 - the disk is unlocked by the classic `encrypt` initramfs hook from
   `cryptdevice=`, with no key file (`cryptkey=`, `/crypto_keyfile.bin`, or a
   key in mkinitcpio `FILES`). systemd-based unlocking (`sd-encrypt`,
-  `rd.luks`) is refused because it can use TPM or FIDO tokens on its own, and
+  `rd.luks`) is refused because it can use TPM or FIDO tokens on its own.
+  Every initramfs hook must be on a short list of hooks that cannot unlock a
+  disk (so `clevis` and similar are refused), the image must come from
+  mkinitcpio's standard config, and
 - hibernate really powers off (`HibernateMode` does not keep it in memory).
 
+These checks run again at every hibernate, so a change made since login
+counts.
+
 Normal sleep, hybrid sleep and suspend-then-hibernate still lock as before.
-It only trusts logind's announcement of the sleep that is starting right now,
-never an earlier one. If it can't tell which kind of sleep is starting (for
+It only trusts logind's own announcement (checked by journal fields no other
+program can set) of the sleep starting right now, written within the last
+three seconds; any other kind of sleep announced alongside it means it locks.
+When the machine comes back it confirms with logind that a hibernate really
+finished and time really passed; otherwise it locks at once. If it ever loses
+its hold on the "lock before sleep" guard, it restarts itself. If it can't tell which kind of sleep is starting (for
 example because your user can't read the system journal), it locks. If a
 hibernate fails and the session comes straight back, it locks the moment the
 machine returns. If you remove the
@@ -56,9 +66,10 @@ again automatically.
    `timeout:` line, checks that nothing else differs, and flushes the change
    to disk before reporting success.
 
-It refuses to run when Limine config enrolment (`ENABLE_ENROLL_LIMINE_CONFIG`,
-used with Secure Boot) is on, because editing an enrolled config stops the
-machine booting.
+It refuses to run when Secure Boot is on or Limine config enrolment
+(`ENABLE_ENROLL_LIMINE_CONFIG`) is set, because editing an enrolled config
+stops the machine booting. It edits the `limine.conf` on the ESP named by
+`ESP_PATH` in `/etc/default/limine` (default `/boot`).
 
 Turning it off puts back the exact original line and removes the backup.
 `omarchy refresh limine` resets the whole file to Omarchy's default.
@@ -73,6 +84,9 @@ Turning it off puts back the exact original line and removes the backup.
   the journal and skips the lock when that sleep is a plain hibernate.
 - The boot menu fix runs `bin/boot-wake-root` through `pkexec`. It records
   the original timeout line in `/var/lib/boot-wake/`.
+
+Note: like any plugin that uses `pkexec`, the admin step runs a script from
+your plugin folder, which your user account can edit.
 
 ## Requirements
 

@@ -8,6 +8,13 @@ BW_DROPIN="$BW_DROPIN_DIR/$BW_ID.conf"
 # Tests point these at fixtures.
 BW_CMDLINE_FILE="${BW_CMDLINE_FILE:-/proc/cmdline}"
 BW_MKINITCPIO_DIR="${BW_MKINITCPIO_DIR:-/etc}"
+BW_POWER_DISK_FILE="${BW_POWER_DISK_FILE:-/sys/power/disk}"
+
+# Initramfs hooks known not to unlock a disk on their own. Anything else, such
+# as clevis or a TPM hook, could resume without a typed password.
+BW_SAFE_HOOKS=" base udev autodetect microcode modconf kms keyboard keymap consolefont
+  block encrypt filesystems fsck resume plymouth btrfs-overlayfs lvm2 mdadm_udev usr
+  shutdown grub-btrfs-overlayfs "
 
 # logind's "The system will <action> now!" entry, written for D-Bus requests
 # such as `systemctl hibernate` before PrepareForSleep goes out.
@@ -48,6 +55,20 @@ bw_hibernate_unprotected_reason() {
     return
   fi
 
+  # Only mkinitcpio is understood. Other generators build their own unlock
+  # logic, and a preset can point at a different config.
+  if [[ -z ${BW_SKIP_DEVICE_CHECK:-} ]]; then
+    if command -v dracut >/dev/null 2>&1 || command -v booster >/dev/null 2>&1; then
+      echo "the initramfs may not come from mkinitcpio"
+      return
+    fi
+    if grep -hsE '^[[:space:]]*[A-Za-z0-9_]*_config=' "$BW_MKINITCPIO_DIR"/mkinitcpio.d/*.preset |
+      grep -qvE "_config=[\"']?/etc/mkinitcpio.conf[\"']?[[:space:]]*$"; then
+      echo "an initramfs preset uses its own config"
+      return
+    fi
+  fi
+
   # Read the initramfs hooks the way mkinitcpio does, in a throwaway shell.
   # shellcheck disable=SC2016 # expanded by the inner shell
   config=$(BW_MKINITCPIO_DIR="$BW_MKINITCPIO_DIR" timeout 2 bash -c '
@@ -58,38 +79,65 @@ bw_hibernate_unprotected_reason() {
     printf "HOOKS: %s \nFILES: %s \n" "${HOOKS[*]}" "${FILES[*]}"' 2>/dev/null)
   hooks=$(sed -n 's/^HOOKS:/ /p' <<<"$config")
   files=$(sed -n 's/^FILES:/ /p' <<<"$config")
-  if [[ $hooks != *" encrypt "* || $hooks == *" sd-encrypt "* || $hooks == *" systemd "* ]]; then
+  if [[ $hooks != *" encrypt "* ]]; then
     echo "the disk may unlock without a typed password"
     return
   fi
+  local hook
+  for hook in $hooks; do
+    if [[ $BW_SAFE_HOOKS != *[[:space:]]"$hook"[[:space:]]* ]]; then
+      echo "the initramfs hook '$hook' may unlock the disk without a typed password"
+      return
+    fi
+  done
   # The encrypt hook silently uses /crypto_keyfile.bin when it is baked in.
   if [[ $files =~ [Kk]ey || -e ${BW_KEYFILE:-/crypto_keyfile.bin} ]]; then
     echo "the disk may unlock without a typed password"
     return
   fi
 
-  # HibernateMode=suspend keeps the machine in RAM after writing the image,
-  # so waking needs no disk password at all.
-  if [[ -z ${BW_SKIP_DEVICE_CHECK:-} ]] &&
-    timeout 2 systemd-analyze cat-config systemd/sleep.conf 2>/dev/null |
-      grep -qiE '^[[:space:]]*HibernateMode=.*(suspend|test_resume)'; then
-    echo "hibernate is set to stay in memory"
+  # Hibernate must really power off. HibernateMode=suspend or test_resume
+  # keeps the machine in RAM, so waking needs no disk password at all.
+  local power_disk sleep_conf
+  power_disk=$(<"$BW_POWER_DISK_FILE") 2>/dev/null
+  if [[ ! $power_disk =~ \[(platform|shutdown|reboot)\] ]]; then
+    echo "hibernate is not set to power off"
     return
+  fi
+  if [[ -z ${BW_SKIP_DEVICE_CHECK:-} ]]; then
+    if ! sleep_conf=$(timeout 2 systemd-analyze cat-config systemd/sleep.conf 2>/dev/null) ||
+      [[ -z $sleep_conf ]] ||
+      grep -qiE '^[[:space:]]*HibernateMode[[:space:]]*=.*(suspend|test_resume)' <<<"$sleep_conf"; then
+      echo "hibernate may stay in memory"
+      return
+    fi
   fi
 }
 
-# Maps one logind journal entry (JSON lines on stdin) to the sleep action it
-# announces. Lid and key presses log a plain message; D-Bus requests log a
-# structured entry with ACTION. Anything else is ignored.
-bw_sleep_action_from_journal() {
-  jq -r --arg id "$BW_LOGIND_SLEEP_ID" '
-    if .MESSAGE_ID == $id and (.ACTION | type) == "string" then .ACTION
-    elif (.MESSAGE | type) != "string" then empty
-    elif .MESSAGE == "Hibernating..." then "hibernate"
-    elif .MESSAGE == "Suspending..." then "suspend"
-    elif .MESSAGE == "Hibernating and suspending..." then "hybrid-sleep"
-    elif .MESSAGE == "Suspending, then hibernating..." then "suspend-then-hibernate"
-    else empty end' 2>/dev/null | tail -n1
+# Maps logind journal entries (JSON lines on stdin) to the sleep actions they
+# announce, one per line. Lid and key presses log a plain message; D-Bus
+# requests log a structured entry with ACTION. Anything else is ignored.
+# With $1 (epoch microseconds), only entries logind wrote within 3 seconds
+# before then count, so an old entry stored late is never mistaken for news.
+bw_sleep_actions_from_journal() {
+  jq -r --arg id "$BW_LOGIND_SLEEP_ID" --arg at "${1:-}" '
+    select($at == "" or (
+      (._SOURCE_REALTIME_TIMESTAMP // "" | tonumber? // 0) as $t
+      | $t >= ($at | tonumber) - 3000000 and $t <= ($at | tonumber) + 1000000))
+    | if .MESSAGE_ID == $id and (.ACTION | type) == "string" then .ACTION
+      elif (.MESSAGE | type) != "string" then empty
+      elif .MESSAGE == "Hibernating..." then "hibernate"
+      elif .MESSAGE == "Suspending..." then "suspend"
+      elif .MESSAGE == "Hibernating and suspending..." then "hybrid-sleep"
+      elif .MESSAGE == "Suspending, then hibernating..." then "suspend-then-hibernate"
+      else empty end' 2>/dev/null
+}
+
+# logind's own entries only. These fields are set by journald, not the
+# sender, so no other program can forge them.
+bw_logind_journal() {
+  timeout 0.5 journalctl --system -q -o json --no-pager "$@" \
+    _SYSTEMD_UNIT=systemd-logind.service _UID=0 2>/dev/null
 }
 
 # Prints a journal cursor for "now". Announcements are only trusted when they
@@ -98,23 +146,35 @@ bw_journal_cursor() {
   timeout 1 journalctl --system -q -n0 --show-cursor 2>/dev/null | sed -n 's/^-- cursor: //p'
 }
 
-# Prints the newest sleep action logind announced after cursor $1, retrying
-# briefly because journald may not have stored it yet. Prints "unknown" when
-# nothing can be read, e.g. without permission to read the system journal.
+# Prints the sleep logind announced after cursor $1, for a PrepareForSleep
+# received at $2 (epoch microseconds). Prints "hibernate" only when every fresh
+# announcement says hibernate; a mix prints "mixed". Retries briefly because
+# journald may not have stored it yet, then prints "unknown".
 bw_pending_sleep_action() {
-  local cursor=$1 action try
+  local cursor=$1 at=$2 actions try
   [[ -n $cursor ]] || { echo unknown; return; }
   for (( try = 0; try < 5; try++ )); do
-    action=$(timeout 0.5 journalctl --system -q -o json --no-pager \
-      --after-cursor "$cursor" SYSLOG_IDENTIFIER=systemd-logind 2>/dev/null |
-      bw_sleep_action_from_journal)
-    if [[ -n $action ]]; then
-      echo "$action"
+    actions=$(bw_logind_journal --after-cursor "$cursor" | bw_sleep_actions_from_journal "$at" | sort -u)
+    if [[ -n $actions ]]; then
+      [[ $actions == *$'\n'* ]] && echo mixed || echo "$actions"
       return
     fi
     sleep 0.1
   done
   echo unknown
+}
+
+# True when logind reports a hibernate finished after cursor $1. Waits up to
+# about two seconds, since the entry may be stored just after the wake signal.
+bw_hibernate_finished_since() {
+  local try
+  for (( try = 0; try < 8; try++ )); do
+    bw_logind_journal --after-cursor "$1" |
+      jq -e -s 'any(.[]; .MESSAGE == "Operation '"'"'hibernate'"'"' finished.")' >/dev/null 2>&1 &&
+      return 0
+    sleep 0.25
+  done
+  return 1
 }
 
 # Seconds the machine has spent asleep since boot. It only grows across a real

@@ -43,21 +43,27 @@ SH
 cat >"$fake/dbus-monitor" <<'SH'
 #!/bin/bash
 source "$WORK/scenario"
-sleep 1
+sleep 5
 SH
 chmod +x "$fake"/* "$work/omarchy/bin"/*
 
 printf '%s' 'cryptdevice=PARTUUID=x:root resume=/dev/mapper/root' >"$work/cmdline"
+echo '[platform] shutdown reboot suspend test_resume' >"$work/power_disk"
 echo 'HOOKS=(base udev autodetect block encrypt filesystems)' >"$work/etc/mkinitcpio.conf"
 
-announce() { echo "{\"MESSAGE_ID\":\"9e7066279dc8403da79ce4b1a69064b2\",\"ACTION\":\"$1\"}" >>"$WORK/journal"; }
+# Entries carry the time logind wrote them; ago=N makes one N seconds old.
+announce() {
+  local at=$(( ${EPOCHREALTIME//[!0-9]/} - ${ago:-0} * 1000000 ))
+  echo "{\"MESSAGE_ID\":\"9e7066279dc8403da79ce4b1a69064b2\",\"ACTION\":\"$1\",\"_SOURCE_REALTIME_TIMESTAMP\":\"$at\"}" >>"$WORK/journal"
+}
+finished() { echo "{\"MESSAGE\":\"Operation '$1' finished.\"}" >>"$WORK/journal"; }
 run() {
   : >"$work/events"; : >"$work/journal"; echo 100 >"$work/slept"
-  { declare -f announce; cat; } >"$work/scenario"
+  { declare -f announce finished; cat; } >"$work/scenario"
   WORK=$work PATH="$fake:$PATH" OMARCHY_PATH="$work/omarchy" \
     BW_CMDLINE_FILE="$work/cmdline" BW_MKINITCPIO_DIR="$work/etc" BW_KEYFILE="$work/none" \
-    BW_SKIP_DEVICE_CHECK=1 BW_TEST_SLEPT_FILE="$work/slept" \
-    timeout 10 "$repo/bin/sleep-monitor" >/dev/null 2>&1
+    BW_SKIP_DEVICE_CHECK=1 BW_TEST_SLEPT_FILE="$work/slept" BW_POWER_DISK_FILE="$work/power_disk" \
+    timeout 12 "$repo/bin/sleep-monitor" >/dev/null 2>&1
   sleep 0.3
   paste -sd' ' "$work/events"
 }
@@ -70,7 +76,7 @@ S
 
 check "hibernate skips the lock" "take release take release" "$(run <<'S'
 sleep 0.3; announce hibernate; echo "   boolean true"
-sleep 0.3; echo 500 >"$WORK/slept"; echo "   boolean false"
+sleep 0.3; echo 500 >"$WORK/slept"; finished hibernate; echo "   boolean false"
 S
 )"
 
@@ -103,6 +109,51 @@ sleep 0.3; announce hibernate; echo "   boolean true"
 sleep 0.3; echo 500 >"$WORK/slept"; echo "   boolean false"
 S
   echo 'HOOKS=(base udev autodetect block encrypt filesystems)' >"$work/etc/mkinitcpio.conf"
+)"
+
+check "old announcement stored late is ignored" "take lock budget release take release" "$(run <<'S'
+sleep 0.3; ago=20 announce hibernate; echo "   boolean true"
+sleep 0.3; echo 500 >"$WORK/slept"; finished hibernate; echo "   boolean false"
+S
+)"
+
+check "hibernate mixed with suspend locks" "take lock budget release take release" "$(run <<'S'
+sleep 0.3; announce hibernate; announce suspend; echo "   boolean true"
+sleep 0.3; echo 500 >"$WORK/slept"; echo "   boolean false"
+S
+)"
+
+check "slept but no hibernate finished locks on return" "take release take lock release" "$(run <<'S'
+sleep 0.3; announce hibernate; echo "   boolean true"
+sleep 0.3; echo 500 >"$WORK/slept"; finished suspend; echo "   boolean false"
+S
+)"
+
+check "hibernate kept in RAM locks" "take lock budget release take release" "$(
+  echo 'platform shutdown reboot [suspend] test_resume' >"$work/power_disk"
+  run <<'S'
+sleep 0.3; announce hibernate; echo "   boolean true"
+sleep 0.3; echo 500 >"$WORK/slept"; finished hibernate; echo "   boolean false"
+S
+  echo '[platform] shutdown reboot suspend test_resume' >"$work/power_disk"
+)"
+
+check "clevis hook locks" "take lock budget release take release" "$(
+  echo 'HOOKS=(base udev autodetect block clevis encrypt filesystems)' >"$work/etc/mkinitcpio.conf"
+  run <<'S'
+sleep 0.3; announce hibernate; echo "   boolean true"
+sleep 0.3; echo 500 >"$WORK/slept"; finished hibernate; echo "   boolean false"
+S
+  echo 'HOOKS=(base udev autodetect block encrypt filesystems)' >"$work/etc/mkinitcpio.conf"
+)"
+
+# The inhibitor dies mid-session: the monitor must exit so systemd restarts it.
+check "lost inhibitor ends the monitor" "exited" "$(
+  : >"$work/events"; : >"$work/journal"
+  echo 'sleep 9' >"$work/scenario"
+  ( WORK=$work PATH="$fake:$PATH" OMARCHY_PATH="$work/omarchy" timeout 12 "$repo/bin/sleep-monitor" >/dev/null 2>&1; echo $? >"$work/rc" ) &
+  sleep 1; pkill -f "^$fake/systemd-inhibit" ; wait
+  [[ $(<"$work/rc") == 1 ]] && echo exited || echo "rc $(<"$work/rc")"
 )"
 
 echo "$pass passed, $failed failed"
