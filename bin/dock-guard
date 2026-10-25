@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Runs while "Stay awake while the dock reconnects" is on. logind already
+# Runs while "Stay awake while docked" is on. logind already
 # ignores a closed lid while docked, but it decides "docked" from displays
 # that are switched on. So when the lock screen powers the monitors down, or
 # a dock takes many seconds to come back after a wake, logind sees a closed
