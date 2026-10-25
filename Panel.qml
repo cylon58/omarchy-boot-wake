@@ -18,6 +18,7 @@ Item {
   property bool opened: false
   property bool working: false
   property bool saving: false
+  property bool reloading: false
   property string message: ""
   property var state: ({})
   property var draft: ({})
@@ -43,6 +44,9 @@ Item {
 
   function fixState(id) { return state[id] || { enabled: false, blocked: "" } }
   function savedSeconds() { return fixState("boot-menu").seconds || 1 }
+
+  // The slider shows 5 (Omarchy's own wait) while the shorter menu is off.
+  function sliderSeconds() { return draft["boot-menu"] ? (draft["seconds"] || 1) : 5 }
 
   function resetDraft() {
     draft = {
@@ -77,28 +81,39 @@ Item {
     setDraft(id, !draft[id])
   }
 
-  // Picking a time means wanting the shorter menu, so it switches that on.
+  // Picking under 5 seconds turns the shorter menu on; 5 is Omarchy's own
+  // wait, so picking it turns the fix off.
   function pickSeconds(seconds) {
     if (working) return
+    seconds = Math.round(seconds * 2) / 2
     var next = Object.assign({}, draft)
-    next["seconds"] = Math.round(seconds)
-    next["boot-menu"] = true
+    next["boot-menu"] = seconds < 5
+    if (seconds < 5) next["seconds"] = seconds
     draft = next
   }
 
+  // Sends only what the user changed, so a fix changed elsewhere since the
+  // panel opened is left alone.
   function save() {
     if (working || !dirty) return
+    var args = ["apply"]
+    for (var i = 0; i < fixes.length; i++) {
+      var id = fixes[i].id
+      var on = !!draft[id]
+      var changed = on !== fixState(id).enabled
+      if (id === "boot-menu" && on && draft["seconds"] !== savedSeconds()) changed = true
+      if (!changed) continue
+      args.push(id + "=" + (!on ? "off" : (id === "boot-menu" ? String(draft["seconds"]) : "on")))
+    }
     saving = true
-    run(["apply",
-         "hibernate-unlock=" + (draft["hibernate-unlock"] ? "on" : "off"),
-         "dock-wake=" + (draft["dock-wake"] ? "on" : "off"),
-         "boot-menu=" + (draft["boot-menu"] ? String(draft["seconds"]) : "off")])
+    run(args)
   }
 
   function rowDescription(fix) {
     var current = fixState(fix.id)
     if (current.blocked && !current.enabled) return "Unavailable: " + current.blocked + "."
     if (fix.id === "boot-menu") {
+      if (!draft["boot-menu"]) return "Waits 5 seconds, Omarchy's default. " + fix.description
       var n = draft["seconds"] || 1
       return "Waits " + n + (n === 1 ? " second" : " seconds") + " instead of 5. " + fix.description
     }
@@ -119,15 +134,23 @@ Item {
     onExited: function(exitCode) {
       // Collectors can land after the exit signal; read them on the next tick.
       Qt.callLater(function() {
-        root.working = false
         root.saving = false
+        var wasReloading = root.reloading
+        root.reloading = false
         if (exitCode === 0) {
+          root.working = false
           try { root.state = JSON.parse(out.text) } catch (e) {}
           root.resetDraft()
           return
         }
-        try { root.message = JSON.parse(err.text).error }
-        catch (e) { root.message = "Something went wrong. Run boot-wake in a terminal for details." }
+        if (!wasReloading) {
+          try { root.message = JSON.parse(err.text).error }
+          catch (e) { root.message = "Something went wrong. Run boot-wake in a terminal for details." }
+        }
+        // Show the real state after a failure, but retry only once. Stays
+        // working until then so Save and the switches can't be used mid-reload.
+        if (wasReloading) { root.working = false; return }
+        root.reloading = true
         proc.command = [root.helper, "status"]
         proc.running = true
       })
@@ -184,21 +207,20 @@ Item {
               anchors.verticalCenter: parent.verticalCenter
               minimum: 1
               maximum: 5
-              step: 1
-              integer: true
-              tickCount: 5
-              value: root.draft["seconds"] || 1
+              step: 0.5
+              tickCount: 9
+              value: root.sliderSeconds()
               onMoved: function(v) { root.pickSeconds(v) }
               onReleased: function(v) { root.pickSeconds(v) }
             }
 
             Text {
               anchors.verticalCenter: parent.verticalCenter
-              text: (root.draft["seconds"] || 1) + " s"
+              text: root.sliderSeconds() + " s"
               color: Color.foreground
               font.family: Style.font.family
               font.pixelSize: Style.font.subtitle
-              width: Style.space(36)
+              width: Style.space(44)
               horizontalAlignment: Text.AlignRight
             }
           }

@@ -85,8 +85,8 @@ current_timeout_line() {
 
 set_menu() {
   local seconds=$1 line
-  [[ $seconds =~ ^[0-9]+$ ]] && (( seconds >= 1 && seconds <= 30 )) ||
-    { echo "Seconds must be 1-30" >&2; exit 1; }
+  [[ $seconds =~ ^[1-4](\.5)?$ ]] ||
+    { echo "Seconds must be 1 to 4.5, in half seconds" >&2; exit 1; }
 
   snapshot "shortening the boot menu to ${seconds}s"
   lock_boot_partition

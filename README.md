@@ -24,7 +24,8 @@ plugged in. Unplug it and close the lid, and it sleeps as normal.
 
 **Waiting at the boot menu.** The menu where you can pick a snapshot waits
 5 seconds every time you start up. This switch shortens it, and a slider
-lets you pick 1 to 5 seconds. You can still reach snapshots by pressing an
+lets you pick anywhere from 1 to 4.5 seconds in half-second steps. Sliding
+it back to 5 turns the switch off. You can still reach snapshots by pressing an
 arrow key while the menu shows. It
 asks for your password, and saves a snapshot and a backup copy before it
 changes anything.
@@ -62,7 +63,7 @@ line:
 P=~/.config/omarchy/plugins/io.github.cylon58.boot-wake
 $P/bin/boot-wake status
 $P/bin/boot-wake enable hibernate-unlock   # or boot-menu, dock-wake
-$P/bin/boot-wake enable boot-menu 3        # boot menu waits 3 seconds
+$P/bin/boot-wake enable boot-menu 2.5      # boot menu waits 2.5 seconds
 $P/bin/boot-wake disable hibernate-unlock
 ```
 

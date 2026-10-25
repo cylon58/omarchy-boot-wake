@@ -87,6 +87,10 @@ conf=$work/root/boot/limine.conf
 omarchy_conf=$'### Read more\n#timeout: 3\ndefault_entry: 2\n\n/+Omarchy\n  //linux\n    protocol: efi'
 
 printf '%s\n' "$omarchy_conf" >"$conf"
+helper boot-menu-set 2.5 2>/dev/null
+check "half seconds written" "timeout: 2.5 # set by Boot & Wake" "$(sed -n 2p "$conf")"
+helper boot-menu-restore 2>/dev/null
+rm -f "$work/snapper.log"
 helper boot-menu-set 1 2>/dev/null
 check "commented timeout replaced" "timeout: 1 # set by Boot & Wake" "$(sed -n 2p "$conf")"
 check "rest of config untouched" "$(printf '%s\n' "$omarchy_conf" | sed 2d)" "$(sed 2d "$conf")"
@@ -105,6 +109,8 @@ check "added line removed on restore" $'default_entry: 2\n/+Omarchy' "$(cat "$co
 
 printf '%s\n' "$omarchy_conf" >"$conf"
 check "bad seconds refused" "1" "$(helper boot-menu-set 0 2>/dev/null; echo $?)"
+check "5 seconds refused" "1" "$(helper boot-menu-set 5 2>/dev/null; echo $?)"
+check "quarter seconds refused" "1" "$(helper boot-menu-set 1.25 2>/dev/null; echo $?)"
 check "config unchanged after refusal" "$omarchy_conf" "$(cat "$conf")"
 
 printf '#!/bin/sh\nexit 1\n' >"$work/bin/snapper"
