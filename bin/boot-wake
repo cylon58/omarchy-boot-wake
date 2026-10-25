@@ -4,11 +4,12 @@
 #
 #   boot-wake status                 JSON state of every fix
 #   boot-wake enable <fix>           turn a fix on
+#   boot-wake enable boot-menu <N>   boot menu waits N seconds (1-5)
 #   boot-wake disable <fix>          turn a fix off and restore the original
 #
 # Fixes:
 #   hibernate-unlock   No second password after waking from hibernate
-#   boot-menu          Boot menu waits 1 second instead of 5
+#   boot-menu          Boot menu waits 1 second (or N) instead of 5
 #   dock-wake          Lid shut on a dock, stay awake when the screen locks or wakes
 #
 # Every change is undone by `disable`. Nothing is changed by installing or
@@ -21,6 +22,13 @@ here=$(dirname "$(readlink -f "$0")")
 source "$here/../lib/common.sh"
 
 menu_seconds=1
+
+# The seconds the boot menu was last set to, or the default when it is off.
+current_menu_seconds() {
+  local saved
+  saved=$(cat "$BW_STATE_DIR/boot-menu" 2>/dev/null)
+  [[ $saved =~ ^[1-5]$ ]] && echo "$saved" || echo "$menu_seconds"
+}
 
 fail() {
   jq -cn --arg error "$1" '{error: $error}' >&2
@@ -52,7 +60,7 @@ status() {
   dock_wake_on && on_dock=true
   jq -cn \
     --argjson unlock "$on_unlock" --arg unlockBlocked "$reason" \
-    --argjson menu "$on_menu" --argjson menuSeconds "$menu_seconds" \
+    --argjson menu "$on_menu" --argjson menuSeconds "$(current_menu_seconds)" \
     --argjson dock "$on_dock" \
     '{
       "hibernate-unlock": {enabled: $unlock, blocked: $unlockBlocked},
@@ -127,10 +135,12 @@ disable_dock_wake() {
 }
 
 enable_boot_menu() {
-  pkexec "$here/boot-wake-root" boot-menu-set "$menu_seconds" ||
+  local seconds=${1:-$menu_seconds}
+  [[ $seconds =~ ^[1-5]$ ]] || fail "Choose between 1 and 5 seconds."
+  pkexec "$here/boot-wake-root" boot-menu-set "$seconds" ||
     fail "The boot menu was not changed."
   mkdir -p "$BW_STATE_DIR"
-  echo "$menu_seconds" >"$BW_STATE_DIR/boot-menu"
+  echo "$seconds" >"$BW_STATE_DIR/boot-menu"
 }
 
 disable_boot_menu() {
@@ -144,12 +154,12 @@ case "${1:-} ${2:-}" in
   "status "*) status ;;
   "enable hibernate-unlock") enable_hibernate_unlock && status ;;
   "disable hibernate-unlock") disable_hibernate_unlock && status ;;
-  "enable boot-menu") enable_boot_menu && status ;;
+  "enable boot-menu") enable_boot_menu "${3:-}" && status ;;
   "disable boot-menu") disable_boot_menu && status ;;
   "enable dock-wake") enable_dock_wake && status ;;
   "disable dock-wake") disable_dock_wake && status ;;
   *)
-    sed -n '3,15s/^# \{0,1\}//p' "$0" >&2
+    sed -n '3,16s/^# \{0,1\}//p' "$0" >&2
     exit 2
     ;;
 esac

@@ -19,13 +19,16 @@ Item {
   property string pendingFix: ""
   property string message: ""
   property var state: ({})
+  // Seconds picked on the slider while the boot menu fix is off; used when it
+  // is next turned on.
+  property int pickedSeconds: 1
 
   readonly property string helper: decodeURIComponent(Qt.resolvedUrl("bin/boot-wake").toString().replace("file://", ""))
   readonly property var fixes: [
     { id: "hibernate-unlock", label: "No second password after hibernate",
       description: "The disk password on wake already proves it's you. Normal sleep still locks." },
     { id: "boot-menu", label: "Shorter boot menu",
-      description: "Waits 1 second instead of 5. Asks for your password and takes a snapshot first." },
+      description: "Asks for your password and takes a snapshot first." },
     { id: "dock-wake", label: "Stay awake while docked",
       description: "Lid shut on a dock, it no longer sleeps when the screen locks or just after waking. Undocked, closing the lid still sleeps." }
   ]
@@ -49,7 +52,32 @@ Item {
       return
     }
     pendingFix = id
-    run([current.enabled ? "disable" : "enable", id])
+    var args = [current.enabled ? "disable" : "enable", id]
+    if (id === "boot-menu" && !current.enabled) args.push(String(pickedSeconds))
+    run(args)
+  }
+
+  function menuSeconds() {
+    var menu = fixState("boot-menu")
+    return menu.enabled ? (menu.seconds || 1) : pickedSeconds
+  }
+
+  function pickSeconds(seconds) {
+    seconds = Math.round(seconds)
+    if (working || seconds === menuSeconds()) return
+    if (!fixState("boot-menu").enabled) { pickedSeconds = seconds; return }
+    pendingFix = "boot-menu"
+    run(["enable", "boot-menu", String(seconds)])
+  }
+
+  function rowDescription(fix) {
+    var current = fixState(fix.id)
+    if (current.blocked && !current.enabled) return "Unavailable: " + current.blocked + "."
+    if (fix.id === "boot-menu") {
+      var n = menuSeconds()
+      return "Waits " + n + (n === 1 ? " second" : " seconds") + " instead of 5. " + fix.description
+    }
+    return fix.description
   }
 
   function run(args) {
@@ -111,16 +139,48 @@ Item {
 
       Repeater {
         model: root.fixes
-        delegate: StatusToggle {
+        delegate: ColumnLayout {
           required property var modelData
           Layout.fillWidth: true
-          label: modelData.label
-          description: root.fixState(modelData.id).blocked && !root.fixState(modelData.id).enabled
-            ? "Unavailable: " + root.fixState(modelData.id).blocked + "."
-            : modelData.description
-          checked: root.fixState(modelData.id).enabled
+          spacing: Style.space(8)
           opacity: root.working && root.pendingFix === modelData.id ? 0.5 : 1
-          onClicked: root.flip(modelData.id)
+
+          StatusToggle {
+            Layout.fillWidth: true
+            label: modelData.label
+            description: root.rowDescription(modelData)
+            checked: root.fixState(modelData.id).enabled
+            onClicked: root.flip(modelData.id)
+          }
+
+          // How long the boot menu waits, 1 to 5 seconds.
+          RowLayout {
+            visible: modelData.id === "boot-menu"
+            Layout.fillWidth: true
+            Layout.leftMargin: Style.spacing.rowPaddingX
+            Layout.rightMargin: Style.spacing.rowPaddingX
+            spacing: Style.space(16)
+
+            PanelSlider {
+              Layout.fillWidth: true
+              minimum: 1
+              maximum: 5
+              step: 1
+              integer: true
+              tickCount: 5
+              value: root.menuSeconds()
+              onReleased: function(v) { root.pickSeconds(v) }
+            }
+
+            Text {
+              text: root.menuSeconds() + " s"
+              color: Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.subtitle
+              Layout.preferredWidth: Style.space(36)
+              horizontalAlignment: Text.AlignRight
+            }
+          }
         }
       }
 
