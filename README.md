@@ -38,12 +38,15 @@ omarchy plugin add https://github.com/cylon58/omarchy-boot-wake.git --enable
 omarchy-shell shell summon io.github.cylon58.boot-wake
 ```
 
-The second line opens the panel. Flip the switches you want. Run it again
-any time to change your mind.
+The second line opens the panel. Flip the switches you want, then press
+**Save**. Nothing changes until you save. The button is red while you have
+unsaved changes and green once they're applied. Saving asks for your
+password only when the boot menu changes.
 
 ## Turn it off or remove it
 
-Flip a switch off and everything it changed goes back the way it was. To
+Flip a switch off and press Save, and everything it changed goes back the
+way it was. To
 remove the plugin completely, turn all three switches off first, then run:
 
 ```sh
