@@ -1,33 +1,67 @@
 # Boot & Wake
 
-Opt-in fixes for how an Omarchy machine starts and wakes. Every fix starts
-off, turns on with one switch, and turns off just as easily.
+Small fixes for annoying things that happen when your Omarchy laptop starts
+up or wakes from sleep. Each fix is a switch you turn on or off. Nothing
+changes until you flip one.
 
-| Fix | What it does | Needs admin |
-|---|---|---|
-| **No second password after hibernate** | Waking from hibernate asks for the disk password and then for the lock screen password. The disk password already proves it's you, so this skips the lock screen for hibernate only. | No |
-| **Shorter boot menu** | The Limine menu waits 1 second instead of 5. Press any arrow key during that second to reach snapshots. | Yes |
-| **Stay awake while docked** | With the lid shut on a dock, the laptop goes to sleep whenever the lock screen switches the monitors off, and again right after waking while the dock reconnects. That's because logind only counts monitors that are lit. This keeps it awake while a monitor cable is plugged in, and gives the dock up to a minute after waking. Undocked, closing the lid still sleeps. | No |
+![Boot & Wake panel](preview.png)
+
+## What it fixes
+
+**Typing your password twice after hibernate.** When your laptop wakes from
+hibernate, it asks for your disk password, then asks for your password
+again at the lock screen. The first one already proves it's you, so this
+switch skips the second. Normal sleep still asks for your password as
+usual. This only works when your disk is protected by a password you type,
+which is how Omarchy sets it up. If your setup is different, the switch
+stays off and tells you why.
+
+**Laptop falls asleep on a dock.** If you use your laptop with the lid
+closed on a dock or external monitor, it can fall asleep on its own: when
+the screen locks and the monitor turns off, and again right after waking
+while the dock reconnects. This switch keeps it awake whenever a monitor is
+plugged in. Unplug it and close the lid, and it sleeps as normal.
+
+**Waiting at the boot menu.** The menu where you can pick a snapshot waits
+5 seconds every time you start up. This switch shortens it to 1 second. You
+can still reach snapshots by pressing an arrow key during that second. It
+asks for your password, and saves a snapshot and a backup copy before it
+changes anything.
 
 ## Install
+
+Run these two lines in a terminal:
 
 ```sh
 omarchy plugin add https://github.com/cylon58/omarchy-boot-wake.git --enable
 omarchy-shell shell summon io.github.cylon58.boot-wake
 ```
 
-Then flip the switches you want. Installing and enabling the plugin changes
-nothing on its own.
+The second line opens the panel. Flip the switches you want. Run it again
+any time to change your mind.
 
-There is also a command line:
+## Turn it off or remove it
+
+Flip a switch off and everything it changed goes back the way it was. To
+remove the plugin completely, turn all three switches off first, then run:
 
 ```sh
-~/.config/omarchy/plugins/io.github.cylon58.boot-wake/bin/boot-wake status
-~/.config/omarchy/plugins/io.github.cylon58.boot-wake/bin/boot-wake enable hibernate-unlock
-~/.config/omarchy/plugins/io.github.cylon58.boot-wake/bin/boot-wake disable hibernate-unlock
+omarchy plugin remove io.github.cylon58.boot-wake
 ```
 
-## Safety
+## Technical details
+
+For people who want to know exactly what happens. There is also a command
+line:
+
+```sh
+P=~/.config/omarchy/plugins/io.github.cylon58.boot-wake
+$P/bin/boot-wake status
+$P/bin/boot-wake enable hibernate-unlock   # or boot-menu, dock-wake
+$P/bin/boot-wake disable hibernate-unlock
+```
+
+### Safety
 
 **No second password after hibernate** only turns on when it can confirm that
 waking from hibernate stops at a typed disk password:
@@ -83,7 +117,7 @@ while awake lets go at once, so a laptop with its lid shut still goes to
 sleep. If the laptop is undocked while asleep and wakes in a bag, it sleeps
 again within a minute.
 
-## How it works
+### How it works
 
 - The hibernate fix adds a user systemd drop-in,
   `~/.config/systemd/user/omarchy-sleep-lock.service.d/io.github.cylon58.boot-wake.conf`,
@@ -100,13 +134,13 @@ again within a minute.
 Note: like any plugin that uses `pkexec`, the admin step runs a script from
 your plugin folder, which your user account can edit.
 
-## Requirements
+### Requirements
 
 Omarchy Quattro, `jq`, `python3`, `pkexec`, and Snapper with a `root` config
 for the boot menu fix. Your user needs to be able to read the system journal
 for the hibernate fix (members of `wheel` can on Omarchy).
 
-## Remove
+### Remove from the command line
 
 Turn the fixes off first, then remove the plugin:
 
@@ -118,7 +152,7 @@ $P/bin/boot-wake disable dock-wake
 omarchy plugin remove io.github.cylon58.boot-wake
 ```
 
-## Tests
+### Tests
 
 ```sh
 tests/run.sh       # safety checks and the boot menu editor
