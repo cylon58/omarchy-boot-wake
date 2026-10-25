@@ -176,7 +176,7 @@ apply_in_terminal() {
   xdg-terminal-exec --app-id=org.omarchy.terminal --title="Boot & Wake" -e bash -c "
     echo 'Boot & Wake: saving your changes.'
     echo
-    if BW_ELEVATE=sudo $(printf %q "$0") apply $args >/dev/null; then
+    if BW_ELEVATE=sudo BW_NO_STATUS=1 $(printf %q "$0") apply $args; then
       echo; echo 'Saved. Restart to see it.'; sleep 2
     else
       echo; read -rsn1 -p 'Not saved. Press any key to close.'
@@ -316,7 +316,7 @@ apply() {
 }
 
 case "${1:-} ${2:-}" in
-  "apply "*) shift; apply "$@" && status ;;
+  "apply "*) shift; apply "$@" && { [[ -n ${BW_NO_STATUS:-} ]] || status; } ;;
   "apply-in-terminal "*) shift; apply_in_terminal "$@"; status ;;
   "images "*) images ;;
   "status "*) status ;;
