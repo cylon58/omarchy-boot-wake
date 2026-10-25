@@ -5,6 +5,8 @@
 #   boot-wake status                 JSON state of every fix
 #   boot-wake enable <fix>           turn a fix on
 #   boot-wake enable boot-menu <N>   boot menu waits N seconds (1-5)
+#   boot-wake apply <fix>=on|off|N    set several at once; at most one
+#                                    password prompt (only the boot menu needs one)
 #   boot-wake disable <fix>          turn a fix off and restore the original
 #
 # Fixes:
@@ -150,7 +152,30 @@ disable_boot_menu() {
   rm -f "$BW_STATE_DIR/boot-menu"
 }
 
+# Brings every named fix to the wanted state, changing only what differs.
+# The fixes that need no password go first, so a cancelled password prompt
+# for the boot menu leaves them applied.
+apply() {
+  local arg fix want menu=""
+  for arg; do
+    fix=${arg%%=*} want=${arg#*=}
+    case "$fix=$want" in
+      hibernate-unlock=on) hibernate_unlock_on || enable_hibernate_unlock ;;
+      hibernate-unlock=off) ! hibernate_unlock_on || disable_hibernate_unlock ;;
+      dock-wake=on) dock_wake_on || enable_dock_wake ;;
+      dock-wake=off) disable_dock_wake ;;
+      boot-menu=off | boot-menu=[1-5]) menu=$want ;;
+      *) fail "Unknown setting: $arg" ;;
+    esac
+  done
+  case $menu in
+    off) disable_boot_menu ;;
+    [1-5]) boot_menu_on && [[ $(current_menu_seconds) == "$menu" ]] || enable_boot_menu "$menu" ;;
+  esac
+}
+
 case "${1:-} ${2:-}" in
+  "apply "*) shift; apply "$@" && status ;;
   "status "*) status ;;
   "enable hibernate-unlock") enable_hibernate_unlock && status ;;
   "disable hibernate-unlock") disable_hibernate_unlock && status ;;
@@ -159,7 +184,7 @@ case "${1:-} ${2:-}" in
   "enable dock-wake") enable_dock_wake && status ;;
   "disable dock-wake") disable_dock_wake && status ;;
   *)
-    sed -n '3,16s/^# \{0,1\}//p' "$0" >&2
+    sed -n '3,18s/^# \{0,1\}//p' "$0" >&2
     exit 2
     ;;
 esac
