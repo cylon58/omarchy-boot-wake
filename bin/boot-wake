@@ -7,12 +7,17 @@
 #   boot-wake enable boot-menu <N>   boot menu waits N seconds (1 to 4.5)
 #   boot-wake apply <fix>=on|off|N    set several at once; at most one
 #                                    password prompt (only the boot menu needs one)
+#   boot-wake apply boot-image=<id>   change the image on the password screen;
+#                                    run it in a terminal, it asks with sudo
+#   boot-wake apply-in-terminal ...   apply in a new terminal window (for the panel)
+#   boot-wake images                 JSON list of boot images to choose from
 #   boot-wake disable <fix>          turn a fix off and restore the original
 #
 # Fixes:
 #   hibernate-unlock   No second password after waking from hibernate
 #   boot-menu          Boot menu waits 1 second (or N) instead of 5
 #   dock-wake          Lid shut on a dock, stay awake when the screen locks or wakes
+#   boot-image         The picture above the disk password box at startup
 #
 # Every change is undone by `disable`. Nothing is changed by installing or
 # enabling the plugin itself.
@@ -24,6 +29,15 @@ here=$(dirname "$(readlink -f "$0")")
 source "$here/../lib/common.sh"
 
 menu_seconds=1
+
+# The panel runs root steps with pkexec. A save that also changes the boot
+# image runs in a terminal with sudo instead, so one password covers both.
+elevate=${BW_ELEVATE:-pkexec}
+[[ $elevate == pkexec || $elevate == sudo ]] || elevate=pkexec
+
+installed_logo=/usr/share/plymouth/themes/omarchy/logo.png
+default_logo="${OMARCHY_PATH:-/usr/share/omarchy}/default/plymouth/logo.png"
+prepared_logo="$BW_STATE_DIR/boot-image.png"
 
 # The seconds the boot menu was last set to, or the default when it is off.
 current_menu_seconds() {
@@ -54,6 +68,121 @@ boot_menu_on() {
   [[ -f $BW_STATE_DIR/boot-menu ]]
 }
 
+# A value from an Omarchy colors.toml, e.g. background = "#1a1b26".
+theme_color() {
+  awk -F= -v key="$2" '
+    { field = $1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", field) }
+    field == key {
+      value = $2
+      gsub(/^[[:space:]"]+|["[:space:]]+.*$/, "", value)
+      print value
+      exit
+    }' "$1" 2>/dev/null
+}
+
+# Every image the boot screen can show: Omarchy's logo, each theme's logo,
+# and pictures from ~/Pictures. Ids: omarchy, theme:<name>, file:<path>.
+images() {
+  local name dir file
+  {
+    jq -cn --arg path "$default_logo" '{id: "omarchy", label: "Omarchy", path: $path}'
+    omarchy-plymouth-list 2>/dev/null | while read -r name; do
+      dir=$(omarchy-theme-dir "$name" 2>/dev/null) || continue
+      [[ -f $dir/unlock.png ]] || continue
+      jq -cn --arg id "theme:$name" --arg label "$name" --arg path "$dir/unlock.png" \
+        '{id: $id, label: $label, path: $path}'
+    done
+    find "${XDG_PICTURES_DIR:-$HOME/Pictures}" -maxdepth 1 -type f \
+      \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.webp' \) \
+      -printf '%T@\t%p\n' 2>/dev/null | sort -rn | head -24 | cut -f2- |
+      while IFS= read -r file; do
+        jq -cn --arg id "file:$file" --arg label "${file##*/}" --arg path "$file" \
+          '{id: $id, label: $label, path: $path}'
+      done
+  } | jq -cs .
+}
+
+# Which image the boot screen shows now: one this plugin set, Omarchy's
+# default, a theme's logo, or "other" when it was set some other way.
+current_boot_image() {
+  local name dir
+  if [[ -f $prepared_logo ]] && cmp -s "$prepared_logo" "$installed_logo"; then
+    cat "$BW_STATE_DIR/boot-image" 2>/dev/null && return
+  fi
+  cmp -s "$default_logo" "$installed_logo" && { echo omarchy; return; }
+  while read -r name; do
+    dir=$(omarchy-theme-dir "$name" 2>/dev/null) || continue
+    cmp -s "$dir/unlock.png" "$installed_logo" && { echo "theme:$name"; return; }
+  done < <(omarchy-plymouth-list 2>/dev/null)
+  echo other
+}
+
+# How long the last start took, in seconds, from systemd-analyze. The kernel
+# part includes typing the disk password.
+boot_time() {
+  timeout 3 systemd-analyze time 2>/dev/null | head -1 | jq -Rc '
+    def secs: if test("min") then (capture("(?<m>[0-9.]+)min ?(?<s>[0-9.]*)s?") | (.m|tonumber)*60 + ((.s|select(. != "")|tonumber) // 0))
+      elif test("ms$") then (.[:-2]|tonumber)/1000 else (.[:-1]|tonumber) end;
+    def part(name): (capture("(?<v>([0-9.]+min )?[0-9.]+m?s) \\(" + name + "\\)") | .v | secs) // null;
+    {firmware: part("firmware"), loader: part("loader"), kernel: part("kernel"),
+     userspace: part("userspace"),
+     total: ((capture("= (?<v>([0-9.]+min )?[0-9.]+m?s)") | .v | secs) // null)}' 2>/dev/null || echo null
+}
+
+# Sets the image on the password screen through Omarchy's own command, which
+# rebuilds the boot image and asks for the password with sudo. Takes a root
+# snapshot first. Pictures are shrunk to fit the space Omarchy's logo uses.
+apply_boot_image() {
+  local id=$1 source colors bg fg dir
+  [[ $elevate == sudo ]] || fail "Changing the boot image runs in a terminal."
+  colors="$HOME/.local/state/omarchy/current/theme/colors.toml"
+  case $id in
+    omarchy) source=$default_logo ;;
+    theme:*)
+      dir=$(omarchy-theme-dir "${id#theme:}" 2>/dev/null) || fail "Theme not found: ${id#theme:}"
+      source=$dir/unlock.png
+      colors=$dir/colors.toml
+      ;;
+    file:/*) source=${id#file:} ;;
+    *) fail "Unknown boot image: $id" ;;
+  esac
+  [[ -f $source && -r $source ]] || fail "Image not found: $source"
+  bg=$(theme_color "$colors" background)
+  fg=$(theme_color "$colors" foreground)
+  [[ $bg =~ ^#[0-9a-fA-F]{6}$ ]] || bg="#1a1b26"
+  [[ $fg =~ ^#[0-9a-fA-F]{6}$ ]] || fg="#ffffff"
+
+  mkdir -p "$BW_STATE_DIR"
+  rm -f "$prepared_logo"
+  if [[ $id == file:* ]]; then
+    magick "${source}[0]" -auto-orient -resize '800x400>' "PNG32:$prepared_logo" ||
+      fail "That picture could not be read."
+  else
+    cp --no-dereference -- "$(readlink -f "$source")" "$prepared_logo" || fail "Could not copy $source"
+  fi
+
+  echo "Taking a snapshot first..."
+  sudo snapper -c root create --description "Boot & Wake: boot image" >/dev/null ||
+    fail "The snapshot failed, so the boot image was not changed."
+  omarchy-plymouth-set "$bg" "$fg" "$prepared_logo" || fail "The boot image was not changed."
+  echo "$id" >"$BW_STATE_DIR/boot-image"
+}
+
+# Runs apply in a terminal window with sudo, so one password covers the boot
+# image and the boot menu. Returns when the window closes.
+apply_in_terminal() {
+  local args
+  printf -v args '%q ' "$@"
+  xdg-terminal-exec --app-id=org.omarchy.terminal --title="Boot & Wake" -e bash -c "
+    echo 'Boot & Wake: saving your changes.'
+    echo
+    if BW_ELEVATE=sudo $(printf %q "$0") apply $args >/dev/null; then
+      echo; echo 'Saved. Restart to see it.'; sleep 2
+    else
+      echo; read -rsn1 -p 'Not saved. Press any key to close.'
+    fi"
+}
+
 status() {
   local reason on_unlock=false on_menu=false on_dock=false
   reason=$(bw_hibernate_unprotected_reason)
@@ -64,10 +193,13 @@ status() {
     --argjson unlock "$on_unlock" --arg unlockBlocked "$reason" \
     --argjson menu "$on_menu" --argjson menuSeconds "$(current_menu_seconds)" \
     --argjson dock "$on_dock" \
+    --arg image "$(current_boot_image)" --argjson bootTime "$(boot_time)" \
     '{
       "hibernate-unlock": {enabled: $unlock, blocked: $unlockBlocked},
       "boot-menu": {enabled: $menu, blocked: "", seconds: $menuSeconds},
-      "dock-wake": {enabled: $dock, blocked: ""}
+      "dock-wake": {enabled: $dock, blocked: ""},
+      "boot-image": {current: $image},
+      "boot-time": $bootTime
     }'
 }
 
@@ -139,7 +271,7 @@ disable_dock_wake() {
 enable_boot_menu() {
   local seconds=${1:-$menu_seconds}
   [[ $seconds =~ ^[1-4](\.5)?$ ]] || fail "Choose 1 to 4.5 seconds, in half seconds."
-  pkexec "$here/boot-wake-root" boot-menu-set "$seconds" ||
+  "$elevate" "$here/boot-wake-root" boot-menu-set "$seconds" ||
     fail "The boot menu was not changed."
   mkdir -p "$BW_STATE_DIR"
   echo "$seconds" >"$BW_STATE_DIR/boot-menu"
@@ -147,7 +279,7 @@ enable_boot_menu() {
 
 disable_boot_menu() {
   boot_menu_on || return 0
-  pkexec "$here/boot-wake-root" boot-menu-restore ||
+  "$elevate" "$here/boot-wake-root" boot-menu-restore ||
     fail "The boot menu was not restored."
   rm -f "$BW_STATE_DIR/boot-menu"
 }
@@ -156,11 +288,12 @@ disable_boot_menu() {
 # The fixes that need no password go first, so a cancelled password prompt
 # for the boot menu leaves them applied.
 apply() {
-  local arg fix want menu=""
+  local arg fix want menu="" image=""
   for arg; do
     case $arg in
       hibernate-unlock=on | hibernate-unlock=off | dock-wake=on | dock-wake=off) ;;
       boot-menu=off | boot-menu=[1-4] | boot-menu=[1-4].5) ;;
+      boot-image=omarchy | boot-image=theme:?* | boot-image=file:/?*) ;;
       *) fail "Unknown setting: $arg" ;;
     esac
   done
@@ -172,17 +305,20 @@ apply() {
       dock-wake=on) dock_wake_on || enable_dock_wake ;;
       dock-wake=off) disable_dock_wake ;;
       boot-menu=off | boot-menu=[1-4] | boot-menu=[1-4].5) menu=$want ;;
-      *) fail "Unknown setting: $arg" ;;
+      boot-image=*) image=$want ;;
     esac
   done
   case $menu in
     off) disable_boot_menu ;;
     [1-4] | [1-4].5) boot_menu_on && [[ $(current_menu_seconds) == "$menu" ]] || enable_boot_menu "$menu" ;;
   esac
+  [[ -z $image || $image == "$(current_boot_image)" ]] || apply_boot_image "$image"
 }
 
 case "${1:-} ${2:-}" in
   "apply "*) shift; apply "$@" && status ;;
+  "apply-in-terminal "*) shift; apply_in_terminal "$@"; status ;;
+  "images "*) images ;;
   "status "*) status ;;
   "enable hibernate-unlock") enable_hibernate_unlock && status ;;
   "disable hibernate-unlock") disable_hibernate_unlock && status ;;
@@ -191,7 +327,7 @@ case "${1:-} ${2:-}" in
   "enable dock-wake") enable_dock_wake && status ;;
   "disable dock-wake") disable_dock_wake && status ;;
   *)
-    sed -n '3,18s/^# \{0,1\}//p' "$0" >&2
+    sed -n '3,22s/^# \{0,1\}//p' "$0" >&2
     exit 2
     ;;
 esac
