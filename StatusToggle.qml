@@ -13,6 +13,10 @@ BorderSurface {
   property color onColor: "#4ade80"
   property color offColor: "#f87171"
 
+  // Optional control shown between the text and the switch. It sits above
+  // the row's click area, so it keeps its own clicks and drags.
+  default property alias accessory: accessorySlot.data
+
   signal clicked()
 
   activeFocusOnTab: true
@@ -38,9 +42,11 @@ BorderSurface {
     anchors.leftMargin: root.borderLeft + Style.spacing.rowPaddingX
     anchors.rightMargin: root.borderRight + Style.spacing.rowPaddingX
     spacing: Style.spacing.rowPaddingX
+    z: 1
 
     Column {
       width: parent.width - track.width - parent.spacing
+        - (accessorySlot.width > 0 ? accessorySlot.width + parent.spacing : 0)
       spacing: Style.spacing.xs
       anchors.verticalCenter: parent.verticalCenter
 
@@ -65,6 +71,11 @@ BorderSurface {
         wrapMode: Text.WordWrap
         width: parent.width
       }
+    }
+
+    Row {
+      id: accessorySlot
+      anchors.verticalCenter: parent.verticalCenter
     }
 
     // The row owns the click, so the switch is presentation only here. Drawn

@@ -165,29 +165,23 @@ Item {
 
       Repeater {
         model: root.fixes
-        delegate: ColumnLayout {
+        delegate: StatusToggle {
           required property var modelData
           Layout.fillWidth: true
-          spacing: Style.space(8)
-
-          StatusToggle {
-            Layout.fillWidth: true
-            label: modelData.label
-            description: root.rowDescription(modelData)
-            checked: !!root.draft[modelData.id]
-            onClicked: root.flip(modelData.id)
-          }
+          label: modelData.label
+          description: root.rowDescription(modelData)
+          checked: !!root.draft[modelData.id]
+          onClicked: root.flip(modelData.id)
 
           // How long the boot menu waits, 1 to 5 seconds.
-          RowLayout {
+          Row {
             visible: modelData.id === "boot-menu"
-            Layout.fillWidth: true
-            Layout.leftMargin: Style.spacing.rowPaddingX
-            Layout.rightMargin: Style.spacing.rowPaddingX
-            spacing: Style.space(16)
+            width: visible ? implicitWidth : 0
+            spacing: Style.space(12)
 
             PanelSlider {
-              Layout.fillWidth: true
+              width: Style.space(220)
+              anchors.verticalCenter: parent.verticalCenter
               minimum: 1
               maximum: 5
               step: 1
@@ -199,11 +193,12 @@ Item {
             }
 
             Text {
+              anchors.verticalCenter: parent.verticalCenter
               text: (root.draft["seconds"] || 1) + " s"
               color: Color.foreground
               font.family: Style.font.family
               font.pixelSize: Style.font.subtitle
-              Layout.preferredWidth: Style.space(36)
+              width: Style.space(36)
               horizontalAlignment: Text.AlignRight
             }
           }
