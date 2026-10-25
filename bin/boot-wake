@@ -11,6 +11,7 @@
 #                                    run it in a terminal, it asks with sudo
 #   boot-wake apply-in-terminal ...   apply in a new terminal window (for the panel)
 #   boot-wake images                 JSON list of boot images to choose from
+#   boot-wake open-pictures          open the folder for your own boot pictures
 #   boot-wake disable <fix>          turn a fix off and restore the original
 #
 # Fixes:
@@ -38,6 +39,10 @@ elevate=${BW_ELEVATE:-pkexec}
 installed_logo=/usr/share/plymouth/themes/omarchy/logo.png
 default_logo="${OMARCHY_PATH:-/usr/share/omarchy}/default/plymouth/logo.png"
 prepared_logo="$BW_STATE_DIR/boot-image.png"
+# Your own boot pictures live here, apart from the rest of ~/Pictures.
+pictures_dir="${XDG_PICTURES_DIR:-$HOME/Pictures}/Boot"
+# The space Omarchy's logo sits in. Bigger images are shrunk to fit.
+max_logo=800x400
 
 # The seconds the boot menu was last set to, or the default when it is off.
 current_menu_seconds() {
@@ -81,7 +86,7 @@ theme_color() {
 }
 
 # Every image the boot screen can show: Omarchy's logo, each theme's logo,
-# and pictures from ~/Pictures. Ids: omarchy, theme:<name>, file:<path>.
+# and pictures from ~/Pictures/Boot. Ids: omarchy, theme:<name>, file:<path>.
 images() {
   local name dir file
   {
@@ -92,9 +97,9 @@ images() {
       jq -cn --arg id "theme:$name" --arg label "$name" --arg path "$dir/unlock.png" \
         '{id: $id, label: $label, path: $path}'
     done
-    find "${XDG_PICTURES_DIR:-$HOME/Pictures}" -maxdepth 1 -type f \
+    find "$pictures_dir" -maxdepth 1 -type f \
       \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.webp' \) \
-      -printf '%T@\t%p\n' 2>/dev/null | sort -rn | head -24 | cut -f2- |
+      -printf '%T@\t%p\n' 2>/dev/null | sort -rn | head -48 | cut -f2- |
       while IFS= read -r file; do
         jq -cn --arg id "file:$file" --arg label "${file##*/}" --arg path "$file" \
           '{id: $id, label: $label, path: $path}'
@@ -157,11 +162,17 @@ apply_boot_image() {
   local next="$BW_STATE_DIR/boot-image.new.png"
   mkdir -p "$BW_STATE_DIR"
   rm -f "$next"
-  if [[ $id == file:* ]]; then
-    magick "${source}[0]" -auto-orient -resize '800x400>' "PNG32:$next" ||
-      fail "That picture could not be read."
-  else
+  # A PNG that already fits is used as it is, so Omarchy's own tools still
+  # recognise its logos. Anything else is converted and shrunk to fit.
+  local size
+  size=$(magick identify -format '%m %w %h' "${source}[0]" 2>/dev/null) ||
+    fail "That picture could not be read."
+  read -r format width height <<<"$size"
+  if [[ $format == PNG ]] && (( width <= ${max_logo%x*} && height <= ${max_logo#*x} )); then
     cp --no-dereference -- "$(readlink -f "$source")" "$next" || fail "Could not copy $source"
+  else
+    magick "${source}[0]" -auto-orient -resize "${max_logo}>" "PNG32:$next" ||
+      fail "That picture could not be read."
   fi
 
   echo "Taking a snapshot first..."
@@ -176,6 +187,12 @@ apply_boot_image() {
   fi
   mv -f -- "$next" "$prepared_logo"
   echo "$id" >"$BW_STATE_DIR/boot-image"
+}
+
+# Creates ~/Pictures/Boot if needed and opens it in the file manager.
+open_pictures() {
+  mkdir -p "$pictures_dir"
+  setsid xdg-open "$pictures_dir" >/dev/null 2>&1 &
 }
 
 # Runs apply in a terminal window with sudo, so one password covers the boot
@@ -336,6 +353,7 @@ case "${1:-} ${2:-}" in
   "apply "*) shift; apply "$@" && { [[ -n ${BW_NO_STATUS:-} ]] || status; } ;;
   "apply-in-terminal "*) shift; apply_in_terminal "$@" && status ;;
   "images "*) images ;;
+  "open-pictures "*) open_pictures ;;
   "status "*) status ;;
   "enable hibernate-unlock") enable_hibernate_unlock && status ;;
   "disable hibernate-unlock") disable_hibernate_unlock && status ;;
@@ -344,7 +362,7 @@ case "${1:-} ${2:-}" in
   "enable dock-wake") enable_dock_wake && status ;;
   "disable dock-wake") disable_dock_wake && status ;;
   *)
-    sed -n '3,22s/^# \{0,1\}//p' "$0" >&2
+    sed -n '3,23s/^# \{0,1\}//p' "$0" >&2
     exit 2
     ;;
 esac

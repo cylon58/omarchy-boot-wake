@@ -31,8 +31,11 @@ asks for your password, and saves a snapshot and a backup copy before it
 changes anything.
 
 **Your own boot picture.** Swap the Omarchy logo above the password box
-for any theme's logo or one of your own pictures (from your Pictures
-folder). Pictures are shrunk to fit. Saving opens a small terminal for
+for any theme's logo or one of your own pictures. Put your pictures in the
+**Pictures/Boot** folder (the "Add your own" tile opens it). PNG, JPG and
+WebP all work. Anything bigger than 800 by 400 pixels, the space the
+Omarchy logo uses, is shrunk to fit; a PNG with a transparent background
+looks best, because the screen's background colour shows around it. Saving opens a small terminal for
 your password, takes a snapshot, and uses Omarchy's own boot screen
 command, which takes about a minute.
 

@@ -210,6 +210,11 @@ Item {
   }
 
   Process {
+    id: openPicturesProc
+    command: [root.helper, "open-pictures"]
+  }
+
+  Process {
     id: imageProc
     command: [root.helper, "images"]
     stdout: StdioCollector { id: imageOut; waitForEnd: true }
@@ -358,7 +363,11 @@ Item {
           anchors.fill: parent
           hoverEnabled: true
           cursorShape: Qt.PointingHandCursor
-          onClicked: root.pickerOpen = !root.pickerOpen
+          onClicked: {
+            root.pickerOpen = !root.pickerOpen
+            // Pick up pictures added to the folder since the last look.
+            if (root.pickerOpen) imageProc.running = true
+          }
         }
       }
 
@@ -413,6 +422,54 @@ Item {
             }
           }
         }
+
+        // Opens ~/Pictures/Boot, where your own boot pictures go.
+        Rectangle {
+          width: Style.space(118)
+          height: Style.space(84)
+          color: Qt.darker(Color.background, 1.3)
+          border.width: 1
+          border.color: addMouse.containsMouse ? Color.accent : Qt.darker(Color.foreground, 2)
+
+          Column {
+            anchors.centerIn: parent
+            spacing: Style.space(4)
+
+            Text {
+              anchors.horizontalCenter: parent.horizontalCenter
+              text: "+"
+              color: Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.title * 1.5
+            }
+
+            Text {
+              anchors.horizontalCenter: parent.horizontalCenter
+              text: "Add your own"
+              color: Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+          }
+
+          MouseArea {
+            id: addMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: openPicturesProc.running = true
+          }
+        }
+      }
+
+      Text {
+        visible: root.pickerOpen
+        Layout.fillWidth: true
+        wrapMode: Text.WordWrap
+        text: "Your own pictures go in Pictures/Boot. Big ones are shrunk to fit; a transparent PNG looks best. Reopen this list to see new ones."
+        color: Qt.darker(Color.foreground, 1.5)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
       }
 
       RowLayout {
