@@ -152,35 +152,52 @@ apply_boot_image() {
   [[ $bg =~ ^#[0-9a-fA-F]{6}$ ]] || bg="#1a1b26"
   [[ $fg =~ ^#[0-9a-fA-F]{6}$ ]] || fg="#ffffff"
 
+  # Prepared beside the current record and swapped in only on success, so a
+  # cancelled save leaves the panel's idea of the current image intact.
+  local next="$BW_STATE_DIR/boot-image.new.png"
   mkdir -p "$BW_STATE_DIR"
-  rm -f "$prepared_logo"
+  rm -f "$next"
   if [[ $id == file:* ]]; then
-    magick "${source}[0]" -auto-orient -resize '800x400>' "PNG32:$prepared_logo" ||
+    magick "${source}[0]" -auto-orient -resize '800x400>' "PNG32:$next" ||
       fail "That picture could not be read."
   else
-    cp --no-dereference -- "$(readlink -f "$source")" "$prepared_logo" || fail "Could not copy $source"
+    cp --no-dereference -- "$(readlink -f "$source")" "$next" || fail "Could not copy $source"
   fi
 
   echo "Taking a snapshot first..."
-  sudo snapper -c root create --description "Boot & Wake: boot image" >/dev/null ||
+  if ! sudo snapper -c root create --cleanup-algorithm number \
+    --description "Boot & Wake: boot image" >/dev/null; then
+    rm -f "$next"
     fail "The snapshot failed, so the boot image was not changed."
-  omarchy-plymouth-set "$bg" "$fg" "$prepared_logo" || fail "The boot image was not changed."
+  fi
+  if ! omarchy-plymouth-set "$bg" "$fg" "$next"; then
+    rm -f "$next"
+    fail "The boot image was not changed."
+  fi
+  mv -f -- "$next" "$prepared_logo"
   echo "$id" >"$BW_STATE_DIR/boot-image"
 }
 
 # Runs apply in a terminal window with sudo, so one password covers the boot
 # image and the boot menu. Returns when the window closes.
 apply_in_terminal() {
-  local args
+  local args result
   printf -v args '%q ' "$@"
+  mkdir -p "$BW_STATE_DIR"
+  result=$(mktemp "$BW_STATE_DIR/save-result.XXXXXX")
   xdg-terminal-exec --app-id=org.omarchy.terminal --title="Boot & Wake" -e bash -c "
     echo 'Boot & Wake: saving your changes.'
     echo
     if BW_ELEVATE=sudo BW_NO_STATUS=1 $(printf %q "$0") apply $args; then
+      echo ok >$(printf %q "$result")
       echo; echo 'Saved. Restart to see it.'; sleep 2
     else
       echo; read -rsn1 -p 'Not saved. Press any key to close.'
     fi"
+  [[ $(cat "$result" 2>/dev/null) == ok ]]
+  local saved=$?
+  rm -f "$result"
+  (( saved == 0 )) || fail "Not saved. Nothing after the step that failed was changed."
 }
 
 status() {
@@ -317,7 +334,7 @@ apply() {
 
 case "${1:-} ${2:-}" in
   "apply "*) shift; apply "$@" && { [[ -n ${BW_NO_STATUS:-} ]] || status; } ;;
-  "apply-in-terminal "*) shift; apply_in_terminal "$@"; status ;;
+  "apply-in-terminal "*) shift; apply_in_terminal "$@" && status ;;
   "images "*) images ;;
   "status "*) status ;;
   "enable hibernate-unlock") enable_hibernate_unlock && status ;;

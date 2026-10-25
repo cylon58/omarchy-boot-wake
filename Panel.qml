@@ -67,6 +67,10 @@ Item {
 
   function savedImage() { return (state["boot-image"] || {}).current || "omarchy" }
 
+  function fileUrl(path) {
+    return "file://" + path.split("/").map(encodeURIComponent).join("/")
+  }
+
   function imageById(id) {
     for (var i = 0; i < images.length; i++) if (images[i].id === id) return images[i]
     return null
@@ -343,7 +347,7 @@ Item {
               sourceSize.width: 240
               source: {
                 var img = root.imageById(root.draft["boot-image"])
-                return img ? "file://" + img.path : "file:///usr/share/plymouth/themes/omarchy/logo.png"
+                return root.fileUrl(img ? img.path : "/usr/share/plymouth/themes/omarchy/logo.png")
               }
             }
           }
@@ -383,7 +387,7 @@ Item {
               fillMode: Image.PreserveAspectFit
               asynchronous: true
               sourceSize.width: 220
-              source: "file://" + modelData.path
+              source: root.fileUrl(modelData.path)
             }
 
             Text {
