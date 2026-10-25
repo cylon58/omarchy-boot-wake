@@ -228,19 +228,32 @@ Item {
     visible: root.opened
     title: "Boot & Wake"
     implicitWidth: 520
-    implicitHeight: column.implicitHeight + Style.space(48)
+    implicitHeight: column.implicitHeight + footer.implicitHeight + Style.space(64)
     color: Color.background
     onVisibleChanged: if (!visible) root.opened = false
 
     Shortcut { sequence: "Escape"; onActivated: root.dismiss() }
 
-    ColumnLayout {
-      id: column
-      // Hyprland may tile the window to any size; keep the rows at the top.
+    // Hyprland may tile the window to any size. The rows scroll; Save and the
+    // boot time stay pinned to the bottom so they never go out of view.
+    Flickable {
+      id: scroller
       anchors.top: parent.top
       anchors.left: parent.left
       anchors.right: parent.right
-      anchors.margins: Style.space(24)
+      anchors.bottom: footer.top
+      anchors.topMargin: Style.space(24)
+      anchors.leftMargin: Style.space(24)
+      anchors.rightMargin: Style.space(24)
+      anchors.bottomMargin: Style.space(12)
+      contentWidth: width
+      contentHeight: column.implicitHeight
+      clip: true
+      boundsBehavior: Flickable.StopAtBounds
+
+    ColumnLayout {
+      id: column
+      width: scroller.width
       spacing: Style.space(12)
 
       Text {
@@ -471,10 +484,19 @@ Item {
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
       }
+    }
+    }
+
+    ColumnLayout {
+      id: footer
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.bottom: parent.bottom
+      anchors.margins: Style.space(24)
+      spacing: Style.space(8)
 
       RowLayout {
         Layout.fillWidth: true
-        Layout.topMargin: Style.space(4)
         spacing: Style.space(16)
 
         Text {
