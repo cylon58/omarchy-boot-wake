@@ -4,6 +4,8 @@ BW_ID="io.github.cylon58.boot-wake"
 BW_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/boot-wake"
 BW_DROPIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/omarchy-sleep-lock.service.d"
 BW_DROPIN="$BW_DROPIN_DIR/$BW_ID.conf"
+BW_DOCK_UNIT_NAME="boot-wake-dock.service"
+BW_DOCK_UNIT="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$BW_DOCK_UNIT_NAME"
 
 # Tests point these at fixtures.
 BW_CMDLINE_FILE="${BW_CMDLINE_FILE:-/proc/cmdline}"

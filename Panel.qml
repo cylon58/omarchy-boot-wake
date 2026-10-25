@@ -25,7 +25,9 @@ Item {
     { id: "hibernate-unlock", label: "No second password after hibernate",
       description: "The disk password on wake already proves it's you. Normal sleep still locks." },
     { id: "boot-menu", label: "Shorter boot menu",
-      description: "Waits 1 second instead of 5. Asks for your password and takes a snapshot first." }
+      description: "Waits 1 second instead of 5. Asks for your password and takes a snapshot first." },
+    { id: "dock-wake", label: "Stay awake while docked",
+      description: "Lid shut on a dock, it no longer sleeps when the screen locks or just after waking. Undocked, closing the lid still sleeps." }
   ]
 
   function open() { opened = true; run(["status"]) }

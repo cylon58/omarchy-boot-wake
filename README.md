@@ -7,6 +7,7 @@ off, turns on with one switch, and turns off just as easily.
 |---|---|---|
 | **No second password after hibernate** | Waking from hibernate asks for the disk password and then for the lock screen password. The disk password already proves it's you, so this skips the lock screen for hibernate only. | No |
 | **Shorter boot menu** | The Limine menu waits 1 second instead of 5. Press any arrow key during that second to reach snapshots. | Yes |
+| **Stay awake while docked** | With the lid shut on a dock, the laptop goes to sleep whenever the lock screen switches the monitors off, and again right after waking while the dock reconnects. That's because logind only counts monitors that are lit. This keeps it awake while a monitor cable is plugged in, and gives the dock up to a minute after waking. Undocked, closing the lid still sleeps. | No |
 
 ## Install
 
@@ -74,6 +75,14 @@ stops the machine booting. It edits the `limine.conf` on the ESP named by
 Turning it off puts back the exact original line and removes the backup.
 `omarchy refresh limine` resets the whole file to Omarchy's default.
 
+**Stay awake while docked** only holds logind's lid guard while an external
+monitor is plugged in (lit or not) or logind says the machine is docked. It
+keeps the guard through a sleep, and lets go one minute after waking if the
+dock hasn't come back. Unplugging the dock
+while awake lets go at once, so a laptop with its lid shut still goes to
+sleep. If the laptop is undocked while asleep and wakes in a bag, it sleeps
+again within a minute.
+
 ## How it works
 
 - The hibernate fix adds a user systemd drop-in,
@@ -82,6 +91,9 @@ Turning it off puts back the exact original line and removes the backup.
   the same delay inhibitor and calls Omarchy's own lock script. The only
   difference is that it reads logind's announcement of the coming sleep from
   the journal and skips the lock when that sleep is a plain hibernate.
+- The dock fix installs a user service,
+  `~/.config/systemd/user/boot-wake-dock.service`, that runs `bin/dock-guard`.
+  It takes a `handle-lid-switch` inhibitor, which needs no admin rights.
 - The boot menu fix runs `bin/boot-wake-root` through `pkexec`. It records
   the original timeout line in `/var/lib/boot-wake/`.
 
@@ -102,6 +114,7 @@ Turn the fixes off first, then remove the plugin:
 P=~/.config/omarchy/plugins/io.github.cylon58.boot-wake
 $P/bin/boot-wake disable hibernate-unlock
 $P/bin/boot-wake disable boot-menu
+$P/bin/boot-wake disable dock-wake
 omarchy plugin remove io.github.cylon58.boot-wake
 ```
 
@@ -110,6 +123,7 @@ omarchy plugin remove io.github.cylon58.boot-wake
 ```sh
 tests/run.sh       # safety checks and the boot menu editor
 tests/monitor.sh   # simulated sleeps through the sleep monitor
+tests/dock.sh      # simulated docks and sleeps through the dock guard
 ```
 
 ## License

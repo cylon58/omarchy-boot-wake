@@ -9,6 +9,7 @@
 # Fixes:
 #   hibernate-unlock   No second password after waking from hibernate
 #   boot-menu          Boot menu waits 1 second instead of 5
+#   dock-wake          Lid shut on a dock, stay awake when the screen locks or wakes
 #
 # Every change is undone by `disable`. Nothing is changed by installing or
 # enabling the plugin itself.
@@ -30,21 +31,33 @@ hibernate_unlock_on() {
   [[ -f $BW_DROPIN ]] && grep -q "$BW_ID" "$BW_DROPIN"
 }
 
+dock_wake_on() {
+  [[ -f $BW_DOCK_UNIT ]] && grep -q "$BW_ID" "$BW_DOCK_UNIT" &&
+    systemctl --user -q is-active "$BW_DOCK_UNIT_NAME"
+}
+
+dock_wake_installed() {
+  [[ -f $BW_DOCK_UNIT ]] && grep -q "$BW_ID" "$BW_DOCK_UNIT"
+}
+
 boot_menu_on() {
   [[ -f $BW_STATE_DIR/boot-menu ]]
 }
 
 status() {
-  local reason on_unlock=false on_menu=false
+  local reason on_unlock=false on_menu=false on_dock=false
   reason=$(bw_hibernate_unprotected_reason)
   hibernate_unlock_on && on_unlock=true
   boot_menu_on && on_menu=true
+  dock_wake_on && on_dock=true
   jq -cn \
     --argjson unlock "$on_unlock" --arg unlockBlocked "$reason" \
     --argjson menu "$on_menu" --argjson menuSeconds "$menu_seconds" \
+    --argjson dock "$on_dock" \
     '{
       "hibernate-unlock": {enabled: $unlock, blocked: $unlockBlocked},
-      "boot-menu": {enabled: $menu, blocked: "", seconds: $menuSeconds}
+      "boot-menu": {enabled: $menu, blocked: "", seconds: $menuSeconds},
+      "dock-wake": {enabled: $dock, blocked: ""}
     }'
 }
 
@@ -77,6 +90,42 @@ disable_hibernate_unlock() {
   restart_sleep_lock || fail "Removed, but the sleep lock service did not restart."
 }
 
+enable_dock_wake() {
+  # If the plugin is removed without turning this off, the service just exits.
+  mkdir -p "$(dirname "$BW_DOCK_UNIT")"
+  cat >"$BW_DOCK_UNIT" <<EOF
+# Managed by the Boot & Wake Omarchy plugin ($BW_ID).
+# Turn off with: boot-wake disable dock-wake
+[Unit]
+Description=Boot & Wake: stay awake while docked with the lid shut
+After=dbus.socket
+Requires=dbus.socket
+PartOf=graphical-session.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/bin/sh -c 'm="\$1"; [ -x "\$m" ] && exec "\$m"; exit 0' sh $here/dock-guard
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
+EOF
+  if ! systemctl --user daemon-reload ||
+    ! systemctl --user enable --now "$BW_DOCK_UNIT_NAME" 2>/dev/null; then
+    disable_dock_wake
+    fail "The dock service did not start, so nothing was changed."
+  fi
+}
+
+disable_dock_wake() {
+  dock_wake_installed || return 0
+  systemctl --user disable --now "$BW_DOCK_UNIT_NAME" 2>/dev/null
+  rm -f "$BW_DOCK_UNIT"
+  systemctl --user daemon-reload
+}
+
 enable_boot_menu() {
   pkexec "$here/boot-wake-root" boot-menu-set "$menu_seconds" ||
     fail "The boot menu was not changed."
@@ -97,8 +146,10 @@ case "${1:-} ${2:-}" in
   "disable hibernate-unlock") disable_hibernate_unlock && status ;;
   "enable boot-menu") enable_boot_menu && status ;;
   "disable boot-menu") disable_boot_menu && status ;;
+  "enable dock-wake") enable_dock_wake && status ;;
+  "disable dock-wake") disable_dock_wake && status ;;
   *)
-    sed -n '3,14s/^# \{0,1\}//p' "$0" >&2
+    sed -n '3,15s/^# \{0,1\}//p' "$0" >&2
     exit 2
     ;;
 esac

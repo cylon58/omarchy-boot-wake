@@ -1,0 +1,109 @@
+#!/bin/bash
+
+# Runs while "Stay awake while the dock reconnects" is on. logind already
+# ignores a closed lid while docked, but it decides "docked" from displays
+# that are switched on. So when the lock screen powers the monitors down, or
+# a dock takes many seconds to come back after a wake, logind sees a closed
+# laptop with no dock and puts it straight to sleep.
+#
+# So while docked, this holds logind's lid inhibitor, keeps holding it through
+# a sleep, and after waking gives the dock up to a minute to reappear. If it
+# doesn't, the inhibitor goes and logind sleeps as normal. Undocking while
+# awake releases at once, so an undocked laptop with its lid shut still sleeps.
+
+grace=${BW_DOCK_GRACE:-60}
+poll=${BW_DOCK_POLL:-2}
+drm=${BW_DRM_DIR:-/sys/class/drm}
+
+# Hundredths of a second since boot. Unlike the wall clock it never steps
+# back, so a time correction after waking can't stretch the grace period.
+uptime_cs() {
+  local up _
+  read -r up _ </proc/uptime
+  echo $((10#${up/./}))
+}
+
+# Docked when an external monitor is plugged in, whether or not it is lit,
+# or when logind says so (a dock switch, for instance).
+docked() {
+  local status
+  for status in "$drm"/card*-*/status; do
+    case $status in */card*-eDP-*|*/card*-LVDS-*|*/card*-DSI-*) continue ;; esac
+    [[ -r $status && $(<"$status") == connected ]] && return 0
+  done
+  [[ $(timeout 1 busctl get-property org.freedesktop.login1 /org/freedesktop/login1 \
+    org.freedesktop.login1.Manager Docked 2>/dev/null) == "b true" ]]
+}
+
+inhibitor_pid=""
+
+# True while our own systemd-inhibit is still running. Checking the parent
+# guards against its PID having been reused by something else.
+holding() {
+  local stat ppid
+  [[ -n $inhibitor_pid ]] && stat=$(<"/proc/$inhibitor_pid/stat") 2>/dev/null || return
+  read -r _ ppid _ <<<"${stat##*) }"
+  [[ $ppid == "$$" ]]
+}
+
+take_inhibitor() {
+  holding && return
+  systemd-inhibit --what=handle-lid-switch --mode=block --who="Boot & Wake" \
+    --why="Waiting for the dock to reconnect" sleep infinity &
+  inhibitor_pid=$!
+}
+
+release_inhibitor() {
+  holding || { inhibitor_pid=""; return; }
+  pkill -P "$inhibitor_pid" -x sleep 2>/dev/null
+  kill "$inhibitor_pid" 2>/dev/null
+  wait "$inhibitor_pid" 2>/dev/null
+  inhibitor_pid=""
+}
+
+trap release_inhibitor EXIT
+
+coproc SLEEP_EVENTS {
+  exec dbus-monitor --system \
+    "type='signal',sender='org.freedesktop.login1',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'"
+}
+
+sleeping=false
+sleep_polls=0
+resumed_at=""
+
+while true; do
+  IFS= read -r -t "$poll" line <&"${SLEEP_EVENTS[0]}"
+  status=$?
+  # Above 128 is the read timing out; anything else means dbus-monitor ended.
+  (( status == 0 || status > 128 )) || break
+  if (( status == 0 )); then
+    case $line in
+      *"boolean true"*) sleeping=true; sleep_polls=0 ;;
+      *"boolean false"*) sleeping=false; resumed_at=$(uptime_cs) ;;
+    esac
+  fi
+
+  # This loop is frozen while the machine sleeps, so it only counts awake
+  # time. If the wake signal were ever missed, stop waiting for it after
+  # about a minute awake rather than holding the lid indefinitely.
+  if $sleeping && (( ++sleep_polls > 30 )); then
+    sleeping=false
+    resumed_at=$(uptime_cs)
+  fi
+
+  if docked; then
+    take_inhibitor
+    resumed_at="" # the dock is back; undocking from here releases at once
+  elif $sleeping; then
+    : # keep whatever is held until the machine is back
+  elif [[ -n $resumed_at ]] && holding &&
+    (( $(uptime_cs) - resumed_at < grace * 100 )); then
+    : # just woke up; the dock may still be reconnecting
+  else
+    release_inhibitor
+  fi
+done
+
+# dbus-monitor went away; exit so systemd restarts the service cleanly.
+exit 1
