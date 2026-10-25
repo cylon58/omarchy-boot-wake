@@ -30,6 +30,15 @@ arrow key while the menu shows. It
 asks for your password, and saves a snapshot and a backup copy before it
 changes anything.
 
+**Your own boot picture.** Swap the Omarchy logo above the password box
+for any theme's logo or one of your own pictures (from your Pictures
+folder). Pictures are shrunk to fit. Saving opens a small terminal for
+your password, takes a snapshot, and uses Omarchy's own boot screen
+command, which takes about a minute.
+
+**How long startup takes.** The panel shows how long your last start took
+and how much of it was the boot menu, so you can see what a change saved.
+
 ## Install
 
 Run these two lines in a terminal:
