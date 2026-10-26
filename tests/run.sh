@@ -166,6 +166,20 @@ cat >"$work/bin/limine-mkinitcpio" <<SH
 [ ! -f "$work/rebuild-fails" ]
 SH
 chmod +x "$work/bin/limine-mkinitcpio"
+# The check build: an image with the hook only when its files are in place.
+cat >"$work/bin/mkinitcpio" <<SH
+#!/bin/bash
+[[ -f "$work/check-fails" ]] && exit 1
+while [[ \$1 != -d ]]; do shift; done
+mkdir -p "\$2/hooks"
+if [[ -f "$nroot/etc/initcpio/hooks/boot-wake-numpad" ]]; then
+  touch "\$2/hooks/boot-wake-numpad"; echo 'HOOKS="udev boot-wake-numpad plymouth"' >"\$2/config"
+else
+  echo 'HOOKS="udev plymouth"' >"\$2/config"
+fi
+SH
+chmod +x "$work/bin/mkinitcpio"
+printf 'KEYMAP=us\nXKBLAYOUT=us\nXKBOPTIONS=terminate:ctrl_alt_bksp\n' >"$nroot/etc/vconsole.conf"
 nhelper() { BW_TEST_ROOT="$nroot" PATH="$work/bin:$PATH" "$repo/bin/boot-wake-root" "$@"; }
 numpad_files() {
   local f n=0
@@ -203,20 +217,51 @@ check "failed rebuild undone" "0" "$(numpad_files)"
 check "image rebuilt again without hook" "with without" "$(paste -sd' ' "$work/rebuild.log")"
 rm "$work/rebuild-fails"
 
+rm -f "$work/rebuild.log"
+touch "$work/check-fails"
+check "failed check build refused" "1" "$(nhelper numpad-on 2>/dev/null; echo $?)"
+check "failed check build writes nothing" "0" "$(numpad_files)"
+check "real image never rebuilt" "" "$(cat "$work/rebuild.log" 2>/dev/null)"
+rm "$work/check-fails"
+
+printf 'KEYMAP=ru\nXKBLAYOUT=ru,us\n' >"$nroot/etc/vconsole.conf"
+check "non-Latin layout refused" "1" "$(nhelper numpad-on 2>/dev/null; echo $?)"
+printf 'KEYMAP=us\n' >"$nroot/etc/vconsole.conf"
+check "no layout refused" "1" "$(nhelper numpad-on 2>/dev/null; echo $?)"
+printf 'KEYMAP=us\nXKBLAYOUT=us\nXKBOPTIONS=terminate:ctrl_alt_bksp\n' >"$nroot/etc/vconsole.conf"
+
+# Secure Boot only matters for limine.conf, not for the number pad.
+mkdir -p "$nroot/sys/firmware/efi/efivars"
+printf '\x06\x00\x00\x00\x01' >"$nroot/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+check "Secure Boot allows the number pad" "0" "$(nhelper numpad-on 2>/dev/null; echo $?)"
+check "Secure Boot allows turning it off" "0" "$(nhelper numpad-off 2>/dev/null; echo $?)"
+rm -rf "$nroot/sys"
+
+# The panel's view: the same refusals, before any password is asked.
+blocked() { BW_MKINITCPIO_DIR="$nroot/etc" "$repo/bin/boot-wake" status | jq -r .numpad.blocked; }
+check "status: number pad available" "" "$(blocked)"
+printf 'KEYMAP=ru\nXKBLAYOUT=ru\n' >"$nroot/etc/vconsole.conf"
+check "status: non-Latin layout" "no keyboard layout is set for the password screen" "$(blocked)"
+printf 'KEYMAP=us\nXKBLAYOUT=us\nXKBOPTIONS=terminate:ctrl_alt_bksp\n' >"$nroot/etc/vconsole.conf"
+
 echo 'HOOKS=(base udev keyboard autodetect block encrypt filesystems)' \
   >"$nroot/etc/mkinitcpio.conf.d/omarchy_hooks.conf"
 check "no plymouth refused" "1" "$(nhelper numpad-on 2>/dev/null; echo $?)"
 echo 'HOOKS=(base systemd plymouth autodetect block sd-encrypt filesystems)' \
   >"$nroot/etc/mkinitcpio.conf.d/omarchy_hooks.conf"
 check "systemd image refused" "1" "$(nhelper numpad-on 2>/dev/null; echo $?)"
+check "status: systemd image" "the startup image is systemd-based" "$(blocked)"
 check "refusals write nothing" "0" "$(numpad_files)"
 
 # The hook itself, run by the startup image's own shell.
 echo 'HOOKS=(base udev plymouth keyboard autodetect block encrypt filesystems)' \
   >"$nroot/etc/mkinitcpio.conf.d/omarchy_hooks.conf"
 nhelper numpad-on 2>/dev/null
-ash=/usr/lib/initcpio/busybox
-[[ -x $ash ]] && ash="$ash ash" || ash=sh
+# Only the applets the startup image has, so a missing tool fails here too.
+busybox=/usr/lib/initcpio/busybox
+mkdir -p "$work/applets"
+for applet in $("$busybox" --list); do ln -sf "$busybox" "$work/applets/$applet"; done
+ash="env PATH=$work/applets $busybox ash"
 vconsole() {
   printf '%s\n' "$@" >"$work/vconsole.conf"
   BW_VCONSOLE="$work/vconsole.conf" $ash -c ". '$nroot/etc/initcpio/hooks/boot-wake-numpad'; run_hook" &&

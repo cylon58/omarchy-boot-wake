@@ -25,7 +25,6 @@ marker="# set by Boot & Wake"
 backup=$conf.boot-wake.bak
 
 [[ -n $fake_root ]] || (( EUID == 0 )) || { echo "boot-wake-root must run as root" >&2; exit 1; }
-[[ -f $conf ]] || { echo "No Limine config at $conf" >&2; exit 1; }
 
 # A root snapshot first, so the machine can be rolled back from the boot
 # menu's Snapshots entry. No snapshot, no change.
@@ -37,22 +36,28 @@ snapshot() {
     { echo "Snapshot failed. Nothing changed." >&2; exit 1; }
 }
 
-# Secure Boot setups enrol a checksum of limine.conf; changing the file
-# without re-enrolling makes Limine refuse to boot. Not supported.
-if grep -qsE "^[[:space:]]*ENABLE_ENROLL_LIMINE_CONFIG[[:space:]]*=[[:space:]]*[\"']?yes" \
-  "$fake_root/etc/limine-entry-tool.conf" "$fake_root/etc/default/limine" \
-  "$fake_root"/etc/limine-entry-tool.d/*.conf; then
-  echo "Limine config enrolment is on (Secure Boot); changing limine.conf would stop it booting. Nothing changed." >&2
-  exit 1
-fi
+# Checks before limine.conf is edited. The number pad switch never edits it,
+# so these apply to the boot menu only.
+check_limine_conf() {
+  [[ -f $conf ]] || { echo "No Limine config at $conf" >&2; exit 1; }
 
-# With Secure Boot on, Limine may check an enrolled hash of its config even if
-# the setting above is off (it can be enrolled by hand). Not supported either.
-secure_boot=$(ls "$fake_root"/sys/firmware/efi/efivars/SecureBoot-* 2>/dev/null | head -n1 || true)
-if [[ -n $secure_boot ]] && [[ $(od -An -tu1 "$secure_boot" 2>/dev/null | awk '{print $NF}') == 1 ]]; then
-  echo "Secure Boot is on; changing limine.conf could stop it booting. Nothing changed." >&2
-  exit 1
-fi
+  # Secure Boot setups enrol a checksum of limine.conf; changing the file
+  # without re-enrolling makes Limine refuse to boot. Not supported.
+  if grep -qsE "^[[:space:]]*ENABLE_ENROLL_LIMINE_CONFIG[[:space:]]*=[[:space:]]*[\"']?yes" \
+    "$fake_root/etc/limine-entry-tool.conf" "$fake_root/etc/default/limine" \
+    "$fake_root"/etc/limine-entry-tool.d/*.conf; then
+    echo "Limine config enrolment is on (Secure Boot); changing limine.conf would stop it booting. Nothing changed." >&2
+    exit 1
+  fi
+
+  # With Secure Boot on, Limine may check an enrolled hash of its config even if
+  # the setting above is off (it can be enrolled by hand). Not supported either.
+  secure_boot=$(ls "$fake_root"/sys/firmware/efi/efivars/SecureBoot-* 2>/dev/null | head -n1 || true)
+  if [[ -n $secure_boot ]] && [[ $(od -An -tu1 "$secure_boot" 2>/dev/null | awk '{print $NF}') == 1 ]]; then
+    echo "Secure Boot is on; changing limine.conf could stop it booting. Nothing changed." >&2
+    exit 1
+  fi
+}
 
 # limine-entry-tool and limine-snapper-sync rewrite limine.conf under this
 # lock; holding it keeps their edits and ours from overwriting each other.
@@ -88,6 +93,7 @@ set_menu() {
   local seconds=$1 line
   [[ $seconds =~ ^[1-4](\.5)?$ ]] ||
     { echo "Seconds must be 1 to 4.5, in half seconds" >&2; exit 1; }
+  check_limine_conf
 
   snapshot "shortening the boot menu to ${seconds}s"
   lock_boot_partition
@@ -120,6 +126,7 @@ set_menu() {
 
 restore_menu() {
   local original
+  check_limine_conf
   if [[ -f $saved ]]; then
     original=$(<"$saved")
   elif [[ -f $backup ]]; then
@@ -167,6 +174,19 @@ initramfs_hooks() {
     echo " ${HOOKS[*]} "' _ "$fake_root"
 }
 
+# The first XKB layout in vconsole.conf, which Plymouth needs to build its own
+# keymap. Omarchy keeps the file out of the startup image for layouts that
+# don't type Latin letters; the hook does nothing there, so those count as none.
+vconsole_layout() {
+  local layout
+  layout=$(sed -n 's/^XKBLAYOUT=//p' "$fake_root/etc/vconsole.conf" 2>/dev/null | tail -n1 | sed "s/[\"']//g")
+  layout=${layout%%,*}
+  case $layout in
+    af | am | ara | bd | bg | by | et | ge | gr | il | in | iq | ir | kg | kh | kz | la | lk | mk | mm | mn | mv | np | rs | ru | sy | th | tj | ua) ;;
+    *) echo "$layout" ;;
+  esac
+}
+
 write_numpad_files() {
   mkdir -p "${numpad_hook%/*}" "${numpad_install%/*}" "${numpad_conf%/*}"
   cat >"$numpad_hook" <<'EOF'
@@ -178,7 +198,7 @@ write_numpad_files() {
 run_hook() {
     local conf="${BW_VCONSOLE:-/etc/vconsole.conf}" opts
     [ -f "$conf" ] || return 0
-    opts=$(sed -n 's/^XKBOPTIONS=//p' "$conf" | tail -n1 | tr -d "\"'")
+    opts=$(sed -n 's/^XKBOPTIONS=//p' "$conf" | tail -n1 | sed "s/[\"']//g")
     # Someone who picked a number pad behaviour keeps it.
     case ",$opts," in *,numpad:*) return 0 ;; esac
     { grep -v '^XKBOPTIONS=' "$conf"; echo "XKBOPTIONS=${opts:+$opts,}numpad:mac"; } >"$conf.new" &&
@@ -221,6 +241,23 @@ remove_numpad_files() {
   rm -f "$numpad_hook" "$numpad_install" "$numpad_conf"
 }
 
+# Builds a throwaway startup image first and checks the hook made it in.
+# limine-mkinitcpio reports success even when mkinitcpio fails, so its exit
+# code alone can't be trusted.
+check_build() {
+  local kver tmp ok=1
+  kver=$(uname -r)
+  [[ -d /usr/lib/modules/$kver ]] || kver=$(ls /usr/lib/modules | sort -V | tail -n1)
+  tmp=$(mktemp -d)
+  echo "Checking the new startup image..." >&2
+  if mkinitcpio -k "$kver" -d "$tmp" >/dev/null 2>&1 &&
+    [[ -f $tmp/hooks/boot-wake-numpad ]] && grep -q 'boot-wake-numpad' "$tmp/config"; then
+    ok=0
+  fi
+  rm -rf "$tmp"
+  return $ok
+}
+
 # Rebuilds the startup image the way Omarchy does.
 rebuild_initramfs() {
   echo "Rebuilding the startup image (up to a minute)..." >&2
@@ -236,10 +273,17 @@ numpad_on() {
     { echo "There is no Plymouth password screen to change. Nothing changed." >&2; exit 1; }
   [[ $hooks != *" systemd "* ]] ||
     { echo "A systemd-based startup image is not supported. Nothing changed." >&2; exit 1; }
+  [[ -n $(vconsole_layout) ]] ||
+    { echo "No keyboard layout is set for the password screen. Nothing changed." >&2; exit 1; }
   [[ -f $numpad_conf ]] && { echo "Number pad already on" >&2; exit 0; }
 
   snapshot "turning on the number pad at the password screen"
   write_numpad_files
+  if ! check_build; then
+    remove_numpad_files
+    echo "The new startup image did not build, so nothing changed." >&2
+    exit 1
+  fi
   if ! rebuild_initramfs; then
     # Back to exactly how it was, image included.
     remove_numpad_files

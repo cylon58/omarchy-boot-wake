@@ -78,6 +78,29 @@ numpad_on() {
   [[ -f $BW_MKINITCPIO_DIR/mkinitcpio.conf.d/zz-boot-wake-numpad.conf ]]
 }
 
+# Why the number pad switch can't work here, or nothing. The same rules
+# boot-wake-root checks before changing anything.
+numpad_blocked() {
+  local hooks layout
+  # shellcheck disable=SC2016 # expanded by the inner shell
+  hooks=$(timeout 2 bash -c 'HOOKS=()
+    for f in "$1/mkinitcpio.conf" "$1"/mkinitcpio.conf.d/*.conf; do
+      [[ -r $f ]] && source "$f" >/dev/null 2>&1
+    done
+    echo " ${HOOKS[*]} "' _ "$BW_MKINITCPIO_DIR" 2>/dev/null)
+  if [[ $hooks != *" plymouth "* ]]; then
+    echo "there is no Plymouth password screen"
+  elif [[ $hooks == *" systemd "* ]]; then
+    echo "the startup image is systemd-based"
+  else
+    layout=$(sed -n 's/^XKBLAYOUT=//p' "$BW_MKINITCPIO_DIR/vconsole.conf" 2>/dev/null | tail -n1 | sed "s/[\"']//g")
+    case ${layout%%,*} in
+      "" | af | am | ara | bd | bg | by | et | ge | gr | il | in | iq | ir | kg | kh | kz | la | lk | mk | mm | mn | mv | np | rs | ru | sy | th | tj | ua)
+        echo "no keyboard layout is set for the password screen" ;;
+    esac
+  fi
+}
+
 # A value from an Omarchy colors.toml, e.g. background = "#1a1b26".
 theme_color() {
   awk -F= -v key="$2" '
@@ -232,13 +255,13 @@ status() {
   jq -cn \
     --argjson unlock "$on_unlock" --arg unlockBlocked "$reason" \
     --argjson menu "$on_menu" --argjson menuSeconds "$(current_menu_seconds)" \
-    --argjson dock "$on_dock" --argjson numpad "$on_numpad" \
+    --argjson dock "$on_dock" --argjson numpad "$on_numpad" --arg numpadBlocked "$(numpad_blocked)" \
     --arg image "$(current_boot_image)" --argjson bootTime "$(boot_time)" \
     '{
       "hibernate-unlock": {enabled: $unlock, blocked: $unlockBlocked},
       "boot-menu": {enabled: $menu, blocked: "", seconds: $menuSeconds},
       "dock-wake": {enabled: $dock, blocked: ""},
-      "numpad": {enabled: $numpad, blocked: ""},
+      "numpad": {enabled: $numpad, blocked: $numpadBlocked},
       "boot-image": {current: $image},
       "boot-time": $bootTime
     }'
@@ -326,6 +349,9 @@ disable_boot_menu() {
 }
 
 enable_numpad() {
+  local reason
+  reason=$(numpad_blocked)
+  [[ -z $reason ]] || fail "Not turned on: $reason."
   "$elevate" "$here/boot-wake-root" numpad-on ||
     fail "The number pad setting was not changed."
 }
