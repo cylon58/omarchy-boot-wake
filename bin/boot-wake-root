@@ -245,16 +245,24 @@ remove_numpad_files() {
 # limine-mkinitcpio reports success even when mkinitcpio fails, so its exit
 # code alone can't be trusted.
 check_build() {
-  local kver tmp ok=1
+  local kver tmp log ok=1 dir
   kver=$(uname -r)
-  [[ -d /usr/lib/modules/$kver ]] || kver=$(ls /usr/lib/modules | sort -V | tail -n1)
+  # After a kernel update without a restart, the newest installed kernel.
+  if [[ ! -f /usr/lib/modules/$kver/modules.builtin ]]; then
+    for dir in $(ls -d /usr/lib/modules/*/ | sort -V); do
+      [[ -f $dir/modules.builtin ]] && kver=$(basename "$dir")
+    done
+  fi
   tmp=$(mktemp -d)
+  log=$(mktemp)
   echo "Checking the new startup image..." >&2
-  if mkinitcpio -k "$kver" -d "$tmp" >/dev/null 2>&1 &&
+  if mkinitcpio -k "$kver" -d "$tmp" >"$log" 2>&1 &&
     [[ -f $tmp/hooks/boot-wake-numpad ]] && grep -q 'boot-wake-numpad' "$tmp/config"; then
     ok=0
+  else
+    tail -n5 "$log" >&2
   fi
-  rm -rf "$tmp"
+  rm -rf "$tmp" "$log"
   return $ok
 }
 
