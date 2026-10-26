@@ -1,11 +1,12 @@
 #!/bin/bash
 
-# The privileged half of Boot & Wake, run through pkexec. It only ever touches
-# the timeout line of /boot/limine.conf and keeps the original line so it can
-# be put back exactly.
+# The privileged half of Boot & Wake, run through pkexec. It touches the
+# timeout line of /boot/limine.conf, keeping the original line so it can be
+# put back exactly, and its own startup hook for the number pad.
 #
 #   boot-wake-root boot-menu-set <seconds>
 #   boot-wake-root boot-menu-restore
+#   boot-wake-root numpad-on | numpad-off
 
 set -euo pipefail
 
@@ -147,8 +148,119 @@ restore_menu() {
   rmdir "$state_dir" 2>/dev/null || true
 }
 
+# The number pad. Plymouth draws the disk password screen and reads the
+# keyboard itself, with Num Lock always starting off. A startup hook that runs
+# just before Plymouth adds XKB's numpad:mac option ("the number pad always
+# types digits") to the copy of vconsole.conf inside the startup image. The
+# installed system's own vconsole.conf is never changed.
+numpad_hook=$fake_root/etc/initcpio/hooks/boot-wake-numpad
+numpad_install=$fake_root/etc/initcpio/install/boot-wake-numpad
+numpad_conf=$fake_root/etc/mkinitcpio.conf.d/zz-boot-wake-numpad.conf
+
+# HOOKS as mkinitcpio will see them, with spaces around every name.
+initramfs_hooks() {
+  # shellcheck disable=SC2016 # expanded by the inner shell
+  bash -c 'HOOKS=()
+    for f in "$1/etc/mkinitcpio.conf" "$1"/etc/mkinitcpio.conf.d/*.conf; do
+      [[ -r $f ]] && source "$f" >/dev/null 2>&1
+    done
+    echo " ${HOOKS[*]} "' _ "$fake_root"
+}
+
+write_numpad_files() {
+  mkdir -p "${numpad_hook%/*}" "${numpad_install%/*}" "${numpad_conf%/*}"
+  cat >"$numpad_hook" <<'EOF'
+#!/usr/bin/ash
+# Installed by the Boot & Wake Omarchy plugin; turn it off in its panel.
+# Runs just before Plymouth starts, so the number pad types digits at the disk
+# password screen. Changes only the copy of vconsole.conf in this startup image.
+
+run_hook() {
+    local conf="${BW_VCONSOLE:-/etc/vconsole.conf}" opts
+    [ -f "$conf" ] || return 0
+    opts=$(sed -n 's/^XKBOPTIONS=//p' "$conf" | tail -n1 | tr -d "\"'")
+    # Someone who picked a number pad behaviour keeps it.
+    case ",$opts," in *,numpad:*) return 0 ;; esac
+    { grep -v '^XKBOPTIONS=' "$conf"; echo "XKBOPTIONS=${opts:+$opts,}numpad:mac"; } >"$conf.new" &&
+        mv "$conf.new" "$conf"
+    rm -f "$conf.new"
+    return 0
+}
+EOF
+  cat >"$numpad_install" <<'EOF'
+#!/bin/bash
+# Installed by the Boot & Wake Omarchy plugin; turn it off in its panel.
+
+build() {
+    add_runscript
+}
+
+help() {
+    echo "Makes the number pad type digits at the Plymouth disk password screen."
+}
+EOF
+  cat >"$numpad_conf" <<'EOF'
+# Installed by the Boot & Wake Omarchy plugin; turn it off in its panel.
+# Runs the boot-wake-numpad hook just before Plymouth, so the number pad types
+# digits at the disk password screen. Does nothing if the hook files are gone.
+if [[ -f /etc/initcpio/hooks/boot-wake-numpad && -f /etc/initcpio/install/boot-wake-numpad &&
+  " ${HOOKS[*]} " != *" boot-wake-numpad "* ]]; then
+  _bw_hooks=()
+  for _bw_hook in "${HOOKS[@]}"; do
+    [[ $_bw_hook == plymouth ]] && _bw_hooks+=(boot-wake-numpad)
+    _bw_hooks+=("$_bw_hook")
+  done
+  HOOKS=("${_bw_hooks[@]}")
+  unset _bw_hooks _bw_hook
+fi
+EOF
+  chmod 0644 "$numpad_hook" "$numpad_install" "$numpad_conf"
+}
+
+remove_numpad_files() {
+  rm -f "$numpad_hook" "$numpad_install" "$numpad_conf"
+}
+
+# Rebuilds the startup image the way Omarchy does.
+rebuild_initramfs() {
+  echo "Rebuilding the startup image (up to a minute)..." >&2
+  limine-mkinitcpio >&2
+}
+
+numpad_on() {
+  local hooks
+  command -v limine-mkinitcpio >/dev/null ||
+    { echo "limine-mkinitcpio not found, so the startup image can't be rebuilt. Nothing changed." >&2; exit 1; }
+  hooks=$(initramfs_hooks)
+  [[ $hooks == *" plymouth "* ]] ||
+    { echo "There is no Plymouth password screen to change. Nothing changed." >&2; exit 1; }
+  [[ $hooks != *" systemd "* ]] ||
+    { echo "A systemd-based startup image is not supported. Nothing changed." >&2; exit 1; }
+  [[ -f $numpad_conf ]] && { echo "Number pad already on" >&2; exit 0; }
+
+  snapshot "turning on the number pad at the password screen"
+  write_numpad_files
+  if ! rebuild_initramfs; then
+    # Back to exactly how it was, image included.
+    remove_numpad_files
+    rebuild_initramfs || true
+    echo "The startup image did not rebuild, so the change was undone." >&2
+    exit 1
+  fi
+}
+
+numpad_off() {
+  [[ -f $numpad_conf || -f $numpad_hook || -f $numpad_install ]] ||
+    { echo "Number pad already off" >&2; exit 0; }
+  snapshot "turning off the number pad at the password screen"
+  remove_numpad_files
+  rebuild_initramfs || { echo "The startup image did not rebuild. Try again." >&2; exit 1; }
+}
+
 case ${1:-} in
   boot-menu-set) set_menu "${2:-}" ;;
   boot-menu-restore) restore_menu ;;
-  *) echo "usage: boot-wake-root boot-menu-set <seconds> | boot-menu-restore" >&2; exit 2 ;;
+  numpad-on) numpad_on ;;
+  numpad-off) numpad_off ;;
+  *) echo "usage: boot-wake-root boot-menu-set <seconds> | boot-menu-restore | numpad-on | numpad-off" >&2; exit 2 ;;
 esac

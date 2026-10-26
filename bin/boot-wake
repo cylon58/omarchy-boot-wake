@@ -18,6 +18,7 @@
 #   hibernate-unlock   No second password after waking from hibernate
 #   boot-menu          Boot menu waits 1 second (or N) instead of 5
 #   dock-wake          Lid shut on a dock, stay awake when the screen locks or wakes
+#   numpad             The number pad types digits at the disk password screen
 #   boot-image         The picture above the disk password box at startup
 #
 # Every change is undone by `disable`. Nothing is changed by installing or
@@ -71,6 +72,10 @@ dock_wake_installed() {
 
 boot_menu_on() {
   [[ -f $BW_STATE_DIR/boot-menu ]]
+}
+
+numpad_on() {
+  [[ -f $BW_MKINITCPIO_DIR/mkinitcpio.conf.d/zz-boot-wake-numpad.conf ]]
 }
 
 # A value from an Omarchy colors.toml, e.g. background = "#1a1b26".
@@ -218,20 +223,22 @@ apply_in_terminal() {
 }
 
 status() {
-  local reason on_unlock=false on_menu=false on_dock=false
+  local reason on_unlock=false on_menu=false on_dock=false on_numpad=false
   reason=$(bw_hibernate_unprotected_reason)
   hibernate_unlock_on && on_unlock=true
   boot_menu_on && on_menu=true
   dock_wake_on && on_dock=true
+  numpad_on && on_numpad=true
   jq -cn \
     --argjson unlock "$on_unlock" --arg unlockBlocked "$reason" \
     --argjson menu "$on_menu" --argjson menuSeconds "$(current_menu_seconds)" \
-    --argjson dock "$on_dock" \
+    --argjson dock "$on_dock" --argjson numpad "$on_numpad" \
     --arg image "$(current_boot_image)" --argjson bootTime "$(boot_time)" \
     '{
       "hibernate-unlock": {enabled: $unlock, blocked: $unlockBlocked},
       "boot-menu": {enabled: $menu, blocked: "", seconds: $menuSeconds},
       "dock-wake": {enabled: $dock, blocked: ""},
+      "numpad": {enabled: $numpad, blocked: ""},
       "boot-image": {current: $image},
       "boot-time": $bootTime
     }'
@@ -318,15 +325,27 @@ disable_boot_menu() {
   rm -f "$BW_STATE_DIR/boot-menu"
 }
 
+enable_numpad() {
+  "$elevate" "$here/boot-wake-root" numpad-on ||
+    fail "The number pad setting was not changed."
+}
+
+disable_numpad() {
+  numpad_on || return 0
+  "$elevate" "$here/boot-wake-root" numpad-off ||
+    fail "The number pad setting was not changed."
+}
+
 # Brings every named fix to the wanted state, changing only what differs.
 # The fixes that need no password go first, so a cancelled password prompt
 # for the boot menu leaves them applied.
 apply() {
-  local arg fix want menu="" image=""
+  local arg fix want menu="" numpad="" image=""
   for arg; do
     case $arg in
       hibernate-unlock=on | hibernate-unlock=off | dock-wake=on | dock-wake=off) ;;
       boot-menu=off | boot-menu=[1-4] | boot-menu=[1-4].5) ;;
+      numpad=on | numpad=off) ;;
       boot-image=omarchy | boot-image=theme:?* | boot-image=file:/?*) ;;
       *) fail "Unknown setting: $arg" ;;
     esac
@@ -339,12 +358,17 @@ apply() {
       dock-wake=on) dock_wake_on || enable_dock_wake ;;
       dock-wake=off) disable_dock_wake ;;
       boot-menu=off | boot-menu=[1-4] | boot-menu=[1-4].5) menu=$want ;;
+      numpad=*) numpad=$want ;;
       boot-image=*) image=$want ;;
     esac
   done
   case $menu in
     off) disable_boot_menu ;;
     [1-4] | [1-4].5) boot_menu_on && [[ $(current_menu_seconds) == "$menu" ]] || enable_boot_menu "$menu" ;;
+  esac
+  case $numpad in
+    on) numpad_on || enable_numpad ;;
+    off) disable_numpad ;;
   esac
   [[ -z $image || $image == "$(current_boot_image)" ]] || apply_boot_image "$image"
 }
@@ -361,8 +385,10 @@ case "${1:-} ${2:-}" in
   "disable boot-menu") disable_boot_menu && status ;;
   "enable dock-wake") enable_dock_wake && status ;;
   "disable dock-wake") disable_dock_wake && status ;;
+  "enable numpad") enable_numpad && status ;;
+  "disable numpad") disable_numpad && status ;;
   *)
-    sed -n '3,23s/^# \{0,1\}//p' "$0" >&2
+    sed -n '3,25s/^# \{0,1\}//p' "$0" >&2
     exit 2
     ;;
 esac

@@ -36,6 +36,10 @@ initramfs 'MODULES=()' 'FILES=()' 'HOOKS=(base systemd autodetect block filesyst
 echo 'HOOKS=(base udev plymouth keyboard autodetect kms block encrypt filesystems fsck)' \
   >"$work/etc/mkinitcpio.conf.d/omarchy_hooks.conf"
 check "omarchy default is protected" "" "$(reason "$omarchy_cmdline")"
+echo 'HOOKS=(base udev boot-wake-numpad plymouth keyboard autodetect kms block encrypt filesystems fsck)' \
+  >"$work/etc/mkinitcpio.conf.d/zz_numpad.conf"
+check "number pad hook is protected" "" "$(reason "$omarchy_cmdline")"
+rm "$work/etc/mkinitcpio.conf.d/zz_numpad.conf"
 check "no hibernation" "hibernation is not set up" \
   "$(reason 'cryptdevice=PARTUUID=x:root root=/dev/mapper/root quiet')"
 check "key file on cmdline" "the disk may unlock without a typed password" \
@@ -148,6 +152,86 @@ check "ESP_PATH followed" "timeout: 1 # set by Boot & Wake" "$(sed -n 2p "$work/
 check "other limine.conf untouched" "$omarchy_conf" "$(cat "$conf")"
 helper boot-menu-restore 2>/dev/null
 check "ESP_PATH restore" "$omarchy_conf" "$(cat "$work/root/efi/limine.conf")"
+
+# --- Number pad at the password screen ----------------------------------------
+# Rebuilds are faked; the log shows whether the hook was in place at the time.
+nroot=$work/nroot
+mkdir -p "$nroot/boot" "$nroot/etc/mkinitcpio.conf.d"
+printf '%s\n' "$omarchy_conf" >"$nroot/boot/limine.conf"
+echo 'HOOKS=(base udev plymouth keyboard autodetect block encrypt filesystems)' \
+  >"$nroot/etc/mkinitcpio.conf.d/omarchy_hooks.conf"
+cat >"$work/bin/limine-mkinitcpio" <<SH
+#!/bin/sh
+[ -f "$nroot/etc/initcpio/hooks/boot-wake-numpad" ] && echo with >>"$work/rebuild.log" || echo without >>"$work/rebuild.log"
+[ ! -f "$work/rebuild-fails" ]
+SH
+chmod +x "$work/bin/limine-mkinitcpio"
+nhelper() { BW_TEST_ROOT="$nroot" PATH="$work/bin:$PATH" "$repo/bin/boot-wake-root" "$@"; }
+numpad_files() {
+  local f n=0
+  for f in initcpio/hooks/boot-wake-numpad initcpio/install/boot-wake-numpad mkinitcpio.conf.d/zz-boot-wake-numpad.conf; do
+    [[ -f $nroot/etc/$f ]] && n=$((n + 1))
+  done
+  echo "$n"
+}
+
+rm -f "$work/snapper.log" "$work/rebuild.log"
+check "numpad on succeeds" "0" "$(nhelper numpad-on 2>/dev/null; echo $?)"
+check "numpad files written" "3" "$(numpad_files)"
+check "numpad snapshot first" "1" "$(grep -c create "$work/snapper.log")"
+check "numpad image rebuilt with hook" "with" "$(cat "$work/rebuild.log")"
+check "numpad on again changes nothing" "0 with" "$(nhelper numpad-on 2>/dev/null; echo $? $(cat "$work/rebuild.log"))"
+
+# The drop-in, read the way mkinitcpio reads it, with the hook paths faked.
+hooks_with_dropin() {
+  sed "s#/etc/initcpio#$nroot/etc/initcpio#g" "$nroot/etc/mkinitcpio.conf.d/zz-boot-wake-numpad.conf" >"$work/dropin.conf"
+  bash -c 'HOOKS=(base udev plymouth keyboard encrypt); source "$1"; source "$1"; echo "${HOOKS[*]}"' _ "$work/dropin.conf"
+}
+check "hook runs just before plymouth, once" "base udev boot-wake-numpad plymouth keyboard encrypt" "$(hooks_with_dropin)"
+rm "$nroot/etc/initcpio/hooks/boot-wake-numpad"
+check "missing hook file leaves HOOKS alone" "base udev plymouth keyboard encrypt" "$(hooks_with_dropin)"
+
+rm -f "$work/rebuild.log"
+check "numpad off succeeds" "0" "$(nhelper numpad-off 2>/dev/null; echo $?)"
+check "numpad files removed" "0" "$(numpad_files)"
+check "numpad image rebuilt without hook" "without" "$(cat "$work/rebuild.log")"
+
+rm -f "$work/rebuild.log"
+touch "$work/rebuild-fails"
+check "failed rebuild refused" "1" "$(nhelper numpad-on 2>/dev/null; echo $?)"
+check "failed rebuild undone" "0" "$(numpad_files)"
+check "image rebuilt again without hook" "with without" "$(paste -sd' ' "$work/rebuild.log")"
+rm "$work/rebuild-fails"
+
+echo 'HOOKS=(base udev keyboard autodetect block encrypt filesystems)' \
+  >"$nroot/etc/mkinitcpio.conf.d/omarchy_hooks.conf"
+check "no plymouth refused" "1" "$(nhelper numpad-on 2>/dev/null; echo $?)"
+echo 'HOOKS=(base systemd plymouth autodetect block sd-encrypt filesystems)' \
+  >"$nroot/etc/mkinitcpio.conf.d/omarchy_hooks.conf"
+check "systemd image refused" "1" "$(nhelper numpad-on 2>/dev/null; echo $?)"
+check "refusals write nothing" "0" "$(numpad_files)"
+
+# The hook itself, run by the startup image's own shell.
+echo 'HOOKS=(base udev plymouth keyboard autodetect block encrypt filesystems)' \
+  >"$nroot/etc/mkinitcpio.conf.d/omarchy_hooks.conf"
+nhelper numpad-on 2>/dev/null
+ash=/usr/lib/initcpio/busybox
+[[ -x $ash ]] && ash="$ash ash" || ash=sh
+vconsole() {
+  printf '%s\n' "$@" >"$work/vconsole.conf"
+  BW_VCONSOLE="$work/vconsole.conf" $ash -c ". '$nroot/etc/initcpio/hooks/boot-wake-numpad'; run_hook" &&
+    paste -sd'|' "$work/vconsole.conf"
+}
+check "options extended" "KEYMAP=us|XKBLAYOUT=us|XKBOPTIONS=terminate:ctrl_alt_bksp,numpad:mac" \
+  "$(vconsole KEYMAP=us XKBLAYOUT=us XKBOPTIONS=terminate:ctrl_alt_bksp)"
+check "quoted options extended" "XKBLAYOUT=de|XKBOPTIONS=caps:escape,numpad:mac" \
+  "$(vconsole XKBLAYOUT=de 'XKBOPTIONS="caps:escape"')"
+check "options added" "XKBLAYOUT=us|XKBOPTIONS=numpad:mac" "$(vconsole XKBLAYOUT=us)"
+check "own numpad choice kept" "XKBLAYOUT=us|XKBOPTIONS=numpad:pc" "$(vconsole XKBLAYOUT=us XKBOPTIONS=numpad:pc)"
+rm -f "$work/vconsole.conf"
+check "no vconsole.conf is fine" "0" \
+  "$(BW_VCONSOLE="$work/vconsole.conf" $ash -c ". '$nroot/etc/initcpio/hooks/boot-wake-numpad'; run_hook"; echo $?)"
+nhelper numpad-off 2>/dev/null
 
 echo "$pass passed, $failed failed"
 (( failed == 0 ))

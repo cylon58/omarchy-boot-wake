@@ -32,7 +32,9 @@ Item {
     { id: "boot-menu", label: "Shorter boot menu",
       description: "Takes a snapshot first." },
     { id: "dock-wake", label: "Stay awake while docked",
-      description: "Lid shut on a dock, it no longer sleeps when the screen locks or just after waking. Undocked, closing the lid still sleeps." }
+      description: "Lid shut on a dock, it no longer sleeps when the screen locks or just after waking. Undocked, closing the lid still sleeps." },
+    { id: "numpad", label: "Number pad at the password screen",
+      description: "Number keys type digits when you unlock the disk, without pressing Num Lock. Takes a snapshot first." }
   ]
 
   function open() {
@@ -60,6 +62,7 @@ Item {
       "hibernate-unlock": fixState("hibernate-unlock").enabled,
       "boot-menu": fixState("boot-menu").enabled,
       "dock-wake": fixState("dock-wake").enabled,
+      "numpad": fixState("numpad").enabled,
       "seconds": savedSeconds(),
       "boot-image": savedImage()
     }
@@ -196,7 +199,8 @@ Item {
           return
         }
         if (!wasReloading) {
-          try { root.message = JSON.parse(err.text).error }
+          // Admin steps print progress first; the reason is the last line.
+          try { root.message = JSON.parse(err.text.trim().split("\n").pop()).error }
           catch (e) { root.message = "Something went wrong. Run boot-wake in a terminal for details." }
         }
         // Show the real state after a failure, but retry only once. Stays

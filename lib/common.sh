@@ -16,7 +16,7 @@ BW_POWER_DISK_FILE="${BW_POWER_DISK_FILE:-/sys/power/disk}"
 # as clevis or a TPM hook, could resume without a typed password.
 BW_SAFE_HOOKS=" base udev autodetect microcode modconf kms keyboard keymap consolefont
   block encrypt filesystems fsck resume plymouth btrfs-overlayfs lvm2 mdadm_udev usr
-  shutdown grub-btrfs-overlayfs "
+  shutdown grub-btrfs-overlayfs boot-wake-numpad "
 
 # logind's "The system will <action> now!" entry, written for D-Bus requests
 # such as `systemctl hibernate` before PrepareForSleep goes out.

@@ -30,6 +30,12 @@ arrow key while the menu shows. It
 asks for your password, and saves a snapshot and a backup copy before it
 changes anything.
 
+**Number pad off at the disk password.** The password screen at startup
+ignores Num Lock, so the number pad types nothing until you press it. This
+switch makes the number pad always type digits there. It asks for your
+password, takes a snapshot, and rebuilds the startup image, which takes
+about a minute. Your desktop is not affected.
+
 **Your own boot picture.** Swap the Omarchy logo above the password box
 for any theme's logo or one of your own pictures. Put your pictures in the
 **Pictures/Boot** folder (the "Add your own" tile opens it). PNG, JPG and
@@ -60,7 +66,7 @@ password only when the boot menu changes.
 
 Flip a switch off and press Save, and everything it changed goes back the
 way it was. To
-remove the plugin completely, turn all three switches off first, then run:
+remove the plugin completely, turn all four switches off first, then run:
 
 ```sh
 omarchy plugin remove io.github.cylon58.boot-wake
@@ -74,7 +80,7 @@ line:
 ```sh
 P=~/.config/omarchy/plugins/io.github.cylon58.boot-wake
 $P/bin/boot-wake status
-$P/bin/boot-wake enable hibernate-unlock   # or boot-menu, dock-wake
+$P/bin/boot-wake enable hibernate-unlock   # or boot-menu, dock-wake, numpad
 $P/bin/boot-wake enable boot-menu 2.5      # boot menu waits 2.5 seconds
 $P/bin/boot-wake disable hibernate-unlock
 ```
@@ -127,6 +133,22 @@ stops the machine booting. It edits the `limine.conf` on the ESP named by
 Turning it off puts back the exact original line and removes the backup.
 `omarchy refresh limine` resets the whole file to Omarchy's default.
 
+**Number pad at the password screen** asks for your password, takes a
+Snapper root snapshot, then adds a small startup hook in `/etc/initcpio`
+and a drop-in, `/etc/mkinitcpio.conf.d/zz-boot-wake-numpad.conf`, that runs
+it just before Plymouth. The hook adds XKB's `numpad:mac` option ("the
+number pad always types digits") to the copy of `/etc/vconsole.conf` inside
+the startup image; your installed `vconsole.conf` is never changed, and an
+existing `numpad:` option is left alone. It then rebuilds the image with
+`limine-mkinitcpio`. If the rebuild fails, the files are removed and the
+image is rebuilt as it was. It refuses systemd-based startup images and
+setups without Plymouth. The drop-in does nothing if the hook files are
+missing, so a later kernel update can't fail because of it. Turning it off
+removes all three files and rebuilds.
+
+(Plymouth will copy the console's Num Lock state itself in a future
+release; until then it always starts with Num Lock off.)
+
 **Stay awake while docked** only holds logind's lid guard while an external
 monitor is plugged in (lit or not) or logind says the machine is docked. It
 keeps the guard through a sleep, and lets go one minute after waking if the
@@ -167,6 +189,7 @@ P=~/.config/omarchy/plugins/io.github.cylon58.boot-wake
 $P/bin/boot-wake disable hibernate-unlock
 $P/bin/boot-wake disable boot-menu
 $P/bin/boot-wake disable dock-wake
+$P/bin/boot-wake disable numpad
 omarchy plugin remove io.github.cylon58.boot-wake
 ```
 
