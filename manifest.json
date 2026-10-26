@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "io.github.cylon58.boot-wake",
   "name": "Boot & Wake",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "cylon58",
   "license": "MIT",
-  "description": "Fixes for starting and waking: no second password after hibernate, a docked laptop that stays awake, and a shorter boot menu. Open with: omarchy-shell shell summon io.github.cylon58.boot-wake",
+  "description": "Fixes for starting and waking: no second password after hibernate, a docked laptop that stays awake, a shorter boot menu, your own boot picture, and a number pad that works at the disk password. Opens from the app launcher after first use, or with: omarchy-shell shell summon io.github.cylon58.boot-wake",
   "kinds": [
     "panel"
   ],

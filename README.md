@@ -57,7 +57,8 @@ omarchy plugin add https://github.com/cylon58/omarchy-boot-wake.git --enable
 omarchy-shell shell summon io.github.cylon58.boot-wake
 ```
 
-The second line opens the panel. Flip the switches you want, then press
+The second line opens the panel. After that, Boot & Wake is in your app
+launcher (Super + Space), like any other app. Flip the switches you want, then press
 **Save**. Nothing changes until you save. The button is red while you have
 unsaved changes and green once they're applied. Saving asks for your
 password only when the boot menu changes.
@@ -69,6 +70,7 @@ way it was. To
 remove the plugin completely, turn all four switches off first, then run:
 
 ```sh
+~/.config/omarchy/plugins/io.github.cylon58.boot-wake/bin/boot-wake launcher remove
 omarchy plugin remove io.github.cylon58.boot-wake
 ```
 
@@ -190,6 +192,7 @@ $P/bin/boot-wake disable hibernate-unlock
 $P/bin/boot-wake disable boot-menu
 $P/bin/boot-wake disable dock-wake
 $P/bin/boot-wake disable numpad
+$P/bin/boot-wake launcher remove
 omarchy plugin remove io.github.cylon58.boot-wake
 ```
 

@@ -12,6 +12,7 @@
 #   boot-wake apply-in-terminal ...   apply in a new terminal window (for the panel)
 #   boot-wake images                 JSON list of boot images to choose from
 #   boot-wake open-pictures          open the folder for your own boot pictures
+#   boot-wake launcher [remove]      add (or remove) Boot & Wake in the app launcher
 #   boot-wake disable <fix>          turn a fix off and restore the original
 #
 # Fixes:
@@ -217,6 +218,25 @@ apply_boot_image() {
   echo "$id" >"$BW_STATE_DIR/boot-image"
 }
 
+# A launcher entry, so Boot & Wake opens like any app. The panel adds it
+# when it opens. TryExec hides it if the plugin is removed.
+launcher_file="${XDG_DATA_HOME:-$HOME/.local/share}/applications/$BW_ID.desktop"
+launcher() {
+  local entry
+  entry="[Desktop Entry]
+Type=Application
+Name=Boot & Wake
+Comment=Startup and wake settings: boot menu, boot picture, number pad, sleep
+Exec=omarchy-shell shell summon $BW_ID
+TryExec=$here/boot-wake
+Icon=preferences-system-power
+Terminal=false
+Categories=System;Settings;"
+  [[ $(cat "$launcher_file" 2>/dev/null) == "$entry" ]] && return
+  mkdir -p "${launcher_file%/*}"
+  printf '%s\n' "$entry" >"$launcher_file"
+}
+
 # Creates ~/Pictures/Boot if needed and opens it in the file manager.
 open_pictures() {
   mkdir -p "$pictures_dir"
@@ -404,6 +424,8 @@ case "${1:-} ${2:-}" in
   "apply-in-terminal "*) shift; apply_in_terminal "$@" && status ;;
   "images "*) images ;;
   "open-pictures "*) open_pictures ;;
+  "launcher ") launcher ;;
+  "launcher remove") rm -f "$launcher_file" ;;
   "status "*) status ;;
   "enable hibernate-unlock") enable_hibernate_unlock && status ;;
   "disable hibernate-unlock") disable_hibernate_unlock && status ;;
@@ -414,7 +436,7 @@ case "${1:-} ${2:-}" in
   "enable numpad") enable_numpad && status ;;
   "disable numpad") disable_numpad && status ;;
   *)
-    sed -n '3,25s/^# \{0,1\}//p' "$0" >&2
+    sed -n '3,26s/^# \{0,1\}//p' "$0" >&2
     exit 2
     ;;
 esac

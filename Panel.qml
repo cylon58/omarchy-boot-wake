@@ -42,6 +42,7 @@ Item {
     pickerOpen = false
     run(["status"])
     imageProc.running = true
+    launcherProc.running = true
   }
   function close() { opened = false }
   function toggle() { opened ? close() : open() }
@@ -211,6 +212,12 @@ Item {
         proc.running = true
       })
     }
+  }
+
+  // Adds Boot & Wake to the app launcher, so next time it opens like an app.
+  Process {
+    id: launcherProc
+    command: [root.helper, "launcher"]
   }
 
   Process {
